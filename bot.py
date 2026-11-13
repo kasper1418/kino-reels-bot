@@ -51,6 +51,7 @@ ZOOM = float(os.getenv("KADR_ZOOM", "1.3") or 1.3)
 WORK_DIR = Path(os.getenv("WORK_DIR", "data/work"))
 SESSION = os.getenv("SESSION_PATH", "data/bot")
 QUEUE_MAX = max(1, _env_int("QUEUE_MAX", 5))       # navbatda eng ko'pi bilan nechta kino
+WORKERS = max(1, min(_env_int("WORKERS", 1), 10))  # bir vaqtda nechta kino ishlanadi
 ADMINS = {int(x) for x in os.getenv("ADMIN_IDS", "").replace(" ", "").split(",") if x.strip()}
 ALLOWED = {int(x) for x in os.getenv("ALLOWED_USERS", "").replace(" ", "").split(",") if x.strip()}
 
@@ -109,7 +110,7 @@ HELP = (
 client: TelegramClient
 queue: asyncio.PriorityQueue
 seq = 0
-busy = False
+active: dict[int, tuple] = {}   # id(job) -> (job, boshlangan vaqt): hozir ishlanayotganlar
 user_len: dict[int, int] = {}
 jobs: dict[tuple, "Job"] = {}   # (chat_id, status_id) -> ish; bekor qilish uchun
 pending: dict[int, dict] = {}   # kino yuborilgan, kod/matn kutilmoqda
@@ -338,7 +339,6 @@ ASK_TITLE = (
 
 AVG_DEFAULT = 360.0          # bitta kino o'rtacha necha soniyada tayyor bo'lishi (dastlabki taxmin)
 avg_job = AVG_DEFAULT
-cur_started = 0.0
 
 
 def fmt_eta(sec: float) -> str:
@@ -357,17 +357,28 @@ def waiting_jobs() -> list:
     return [t[2] for t in items if not t[2].cancel.is_set()]
 
 
+def _free_times() -> list[float]:
+    """Har bir ishchi qachon bo'shashi (soniya): ishlayotganlarniki + bo'sh ishchilar uchun 0."""
+    now = time.monotonic()
+    times = [max(avg_job * 0.25, avg_job - (now - started)) for _, started in active.values()]
+    times += [0.0] * max(0, WORKERS - len(active))
+    return sorted(times)
+
+
 def queue_text(job) -> str:
     """Ish uchun navbat o'rni va taxminiy vaqt matni."""
     w = waiting_jobs()
     idx = w.index(job) if job in w else 0
-    pos = idx + 1 + (1 if busy else 0)
-    cur_left = 0.0
-    if busy:
-        cur_left = max(avg_job * 0.25, avg_job - (time.monotonic() - cur_started))
-    wait = cur_left + idx * avg_job
+    ahead_running = len(active) if WORKERS == 1 else 0
+    pos = idx + 1 + ahead_running
+    free = _free_times()
+    wait = 0.0
+    for _ in range(idx + 1):             # navbatdagi har bir ish eng erta bo'shagan ishchiga tushadi
+        wait = free.pop(0)
+        free.append(wait + avg_job)
+        free.sort()
     uid = job.user_id
-    if pos == 1:
+    if wait <= 0:
         text = f"⏳ <b>Qabul qilindi.</b> Hozir boshlanadi.\n✅ Tayyor bo'lishiga taxminan <b>{fmt_eta(avg_job)}</b>."
     else:
         text = (f"⏳ Navbatdasiz: <b>{pos}-o'rin</b>\n"
@@ -957,19 +968,33 @@ async def process(job: Job):
         shutil.rmtree(jobdir, ignore_errors=True)
 
 
+async def wait_for_space(job: Job) -> bool:
+    """Parallel ishlarda disk to'lib qolmasligi uchun: joy bo'shaguncha kutadi."""
+    size = job.msg.file.size or 0
+    need = size * 1.2 + 500 * 1024 * 1024
+    for _ in range(90):                       # ~30 daqiqagacha
+        if job.cancel.is_set() or shutil.disk_usage(WORK_DIR).free >= need:
+            return True
+        await asyncio.sleep(20)
+    return False
+
+
 async def worker():
-    global busy, cur_started
     while True:
         _, _, job = await queue.get()
-        busy = True
-        cur_started = time.monotonic()
+        started = time.monotonic()
+        active[id(job)] = (job, started)
         asyncio.create_task(refresh_queue())
         try:
             if job.cancel.is_set():          # navbatda turganida bekor qilingan
                 continue
+            if not await wait_for_space(job):
+                raise RuntimeError("serverda joy yetarli emas, keyinroq urinib ko'ring")
+            started = time.monotonic()
+            active[id(job)] = (job, started)
             await process(job)
             if not job.cancel.is_set():
-                record_duration(time.monotonic() - cur_started)
+                record_duration(time.monotonic() - started)
         except analyze.Cancelled:
             log.info("Ish bekor qilindi: %s", job.status.id)
         except Exception as e:
@@ -982,7 +1007,7 @@ async def worker():
                 "Kinoni qayta yuborib ko'ring.", force=True, final=True)
         finally:
             jobs.pop((job.chat_id, job.status.id), None)
-            busy = False
+            active.pop(id(job), None)
             queue.task_done()
 
 
@@ -1043,11 +1068,12 @@ async def main():
     except Exception as e:
         log.warning("Buyruqlar menyusini o'rnatib bo'lmadi: %s", e)
     me = await client.get_me()
-    log.info("Bot ishga tushdi: @%s  (reels: %d ta × %d s)", me.username, CLIP_COUNT, DEFAULT_LEN)
+    log.info("Bot ishga tushdi: @%s  (reels: %d ta × %d s, ishchilar: %d)", me.username, CLIP_COUNT, DEFAULT_LEN, WORKERS)
     if not ALLOWED:
         log.warning("ALLOWED_USERS bo'sh — botdan hamma foydalana oladi")
 
-    asyncio.create_task(worker())
+    for _ in range(WORKERS):
+        asyncio.create_task(worker())
     await client.run_until_disconnected()
 
 
