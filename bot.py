@@ -275,7 +275,7 @@ async def on_media(event):
     if uid not in ADMINS and left_today(uid) <= 0:
         await event.reply(LIMIT_TEXT.format(n=daily_of(uid)), buttons=TARIF_BTN, parse_mode="html")
         return
-    if queue.qsize() >= QUEUE_MAX:
+    if uid not in ADMINS and queue.qsize() >= QUEUE_MAX:
         await event.reply("⏳ Hozir navbat to'la. Bir necha daqiqadan keyin qayta yuboring.")
         return
 
@@ -324,7 +324,7 @@ async def enqueue(uid: int):
     if uid not in ADMINS and left_today(uid) <= 0:
         await status.edit(LIMIT_TEXT.format(n=daily_of(uid)), buttons=TARIF_BTN, parse_mode="html")
         return
-    if queue.qsize() >= QUEUE_MAX:
+    if uid not in ADMINS and queue.qsize() >= QUEUE_MAX:
         await status.edit("⏳ Hozir navbat to'la. Bir necha daqiqadan keyin kinoni qayta yuboring.", buttons=NO_BUTTONS)
         return
     job = Job(p["chat_id"], uid, p["msg"], status, user_len.get(uid, DEFAULT_LEN),
