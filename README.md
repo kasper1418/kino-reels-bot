@@ -10,7 +10,7 @@ Telegram'ga kino tashlaysiz. Bot uning eng qiziq joylarini topib, **10 ta vertik
 - Kesish sahna boshidan boshlanadi, boshi va oxiri silliq (fade) chiqadi.
 - Kinodagi qora chiziqlar avtomatik olib tashlanadi. O'rtada kino, tepasi va pasti qora fon.
 - Ovoz telefon uchun balandlashtiriladi. Kinoda o'zbekcha audio yo'lak bo'lsa, o'sha olinadi.
-- Kino yuborilgach, bot **kino kodi** va **matn** so'raydi (ikkalasi ixtiyoriy, tugma bilan o'tkazib yuborish mumkin). Yozilsa, ular videoning tepasida chiroyli shriftda chiqadi. Matnda `*yulduzcha*` ichiga olingan so'zlar sariq rangli bo'ladi.
+- Kino yuborilgach, bot **kino kodi** va **matn** so'raydi (ikkalasi ixtiyoriy, tugma bilan o'tkazib yuborish mumkin). Yozilsa, matn videoning tepasida, kod esa pastida chiroyli shriftda chiqadi. Matnda `*yulduzcha*` ichiga olingan so'zlar sariq rangli bo'ladi.
 - Har bir reels ostida kinoning qaysi qismi ekanligi yoziladi (masalan, `1:12:40–1:13:20`).
 
 ## 1. Kerakli kalitlar

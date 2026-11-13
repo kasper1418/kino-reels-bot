@@ -94,7 +94,7 @@ HELP = (
     "vertikal (9:16) reels tayyorlab beraman.\n\n"
     "• Kinoni video yoki fayl qilib yuboring (MP4, MKV, AVI…), 2 GB gacha.\n"
     "• Kinoni yuborgach, bot <b>kino kodi</b> va <b>matn</b> so'raydi (ixtiyoriy). Yozsangiz, "
-    "ular videoning tepasida chiroyli shriftda chiqadi. Ba'zi so'zlarni rangli qilish uchun "
+    "matn videoning tepasida, kod pastida chiroyli shriftda chiqadi. Ba'zi so'zlarni rangli qilish uchun "
     "<code>*yulduzcha*</code> ichiga oling.\n"
     "• Reels uzunligi hozir: {length} soniya. O'zgartirish: /uzunlik 30 "
     "(15–90 oralig'ida).\n"
@@ -231,7 +231,7 @@ async def on_media(event):
     old = pending.pop(uid, None)
     status = await event.reply(
         "🎬 Kino qabul qilindi.\n\n"
-        "1️⃣ <b>Kino kodini</b> yozing (masalan: <code>1234</code>). U videoning tepasida chiqadi.\n"
+        "1️⃣ <b>Kino kodini</b> yozing (masalan: <code>1234</code>). U videoning pastida chiqadi.\n"
         "Kerak bo'lmasa, tugmani bosing.",
         buttons=[Button.inline("⏭ O'tkazib yuborish", b"skip")],
         parse_mode="html",
