@@ -95,7 +95,7 @@ HELP = (
     "• Kinoni video yoki fayl qilib yuboring (MP4, MKV, AVI…), 2 GB gacha.\n"
     "• Kinoni yuborgach, bot <b>kino kodi</b> va <b>matn</b> so'raydi (ixtiyoriy). Yozsangiz, "
     "matn videoning tepasida, kod pastida chiroyli shriftda chiqadi. Ba'zi so'zlarni rangli qilish uchun "
-    "<code>*yulduzcha*</code> ichiga oling.\n"
+    "<code>*so'z*</code> (sariq) yoki <code>[so'z]</code> (qizil) deb yozing.\n"
     "• Reels uzunligi hozir: {length} soniya. O'zgartirish: /uzunlik 30 "
     "(15–90 oralig'ida).\n"
     "• Har kuni {daily} ta kino ishlata olasiz.\n\n"
@@ -247,8 +247,12 @@ async def on_media(event):
 
 ASK_TITLE = (
     "2️⃣ Endi videoning tepasiga chiqadigan <b>matnni</b> yozing.\n\n"
-    "Ba'zi so'zlarni <b>rangli</b> qilish uchun ularni yulduzcha ichiga oling:\n"
-    "<code>Eng *kuchli* jang sahnasi</code>  →  «kuchli» sariq chiqadi.\n\n"
+    "🎨 <b>So'zni rangli qilish:</b>\n"
+    "• <code>*so'z*</code> yozsangiz — <b>sariq</b> bo'ladi\n"
+    "• <code>[so'z]</code> yozsangiz — <b>qizil</b> bo'ladi\n\n"
+    "Misol:\n"
+    "<code>Eng *kuchli* jang [ayovsiz] sahnasi</code>\n"
+    "Natija: «kuchli» sariq, «ayovsiz» qizil chiqadi.\n\n"
     "Kerak bo'lmasa, tugmani bosing."
 )
 

@@ -1,8 +1,8 @@
 """
 Reelsning yuqori qismiga kino kodi va matnni chiroyli qilib chizadi (shaffof PNG).
 
-Matnda *yulduzcha* ichiga olingan so'zlar rangli (sariq) bo'ladi:
-    Eng *kuchli* jang sahnasi   →   "kuchli" so'zi sariq
+Rangli so'zlar:  *so'z* — sariq,  [so'z] — qizil
+    Eng *kuchli* jang [ayovsiz] sahnasi
 """
 from __future__ import annotations
 
@@ -15,7 +15,8 @@ from PIL import Image, ImageDraw, ImageFont
 
 W, H = 1080, 1920
 WHITE = (255, 255, 255, 255)
-ACCENT = (255, 214, 10, 255)       # ajratilgan so'zlar va kod belgisi rangi
+ACCENT = (255, 214, 10, 255)       # sariq: *so'z*, kod belgisi
+RED = (255, 69, 58, 255)           # qizil: [so'z]
 BLACK = (0, 0, 0, 255)
 SIDE_MARGIN = 60
 
@@ -45,14 +46,20 @@ def _clean(text: str) -> str:
     return re.sub(r"[ \t]+", " ", text).strip()
 
 
-def _parse(text: str) -> list[tuple[str, bool]]:
-    """Matnni (so'z, ajratilganmi) ro'yxatiga aylantiradi."""
-    words: list[tuple[str, bool]] = []
-    parts = re.split(r"\*(.+?)\*", text)           # toq indekslar — yulduzcha ichidagilar
-    for i, part in enumerate(parts):
-        accent = i % 2 == 1
-        for w in part.replace("*", "").split():
-            words.append((w, accent))
+def _parse(text: str) -> list[tuple[str, tuple | None]]:
+    """Matnni (so'z, rang) ro'yxatiga aylantiradi. rang=None — oddiy oq so'z."""
+    words: list[tuple[str, tuple | None]] = []
+    pos = 0
+    for m in re.finditer(r"\*(.+?)\*|\[(.+?)\]", text):
+        for w in text[pos:m.start()].replace("*", "").replace("[", "").replace("]", "").split():
+            words.append((w, None))
+        if m.group(1) is not None:
+            words += [(w, ACCENT) for w in m.group(1).split()]
+        else:
+            words += [(w, RED) for w in m.group(2).split()]
+        pos = m.end()
+    for w in text[pos:].replace("*", "").replace("[", "").replace("]", "").split():
+        words.append((w, None))
     return words
 
 
@@ -120,7 +127,7 @@ def make_overlay(title: str | None, code: str | None, top_h: int, out: Path) -> 
             total = sum(w[2] for w in ln) + space * (len(ln) - 1)
             x = (W - total) / 2
             for word, acc, ww in ln:
-                col = ACCENT if acc else WHITE
+                col = acc or WHITE
                 d.text((x + 3, y + 4), word, font=font, fill=(0, 0, 0, 170), stroke_width=4, stroke_fill=(0, 0, 0, 170))
                 d.text((x, y), word, font=font, fill=col, stroke_width=3, stroke_fill=BLACK)
                 x += ww + space
