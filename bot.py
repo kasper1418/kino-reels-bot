@@ -52,6 +52,7 @@ WORK_DIR = Path(os.getenv("WORK_DIR", "data/work"))
 SESSION = os.getenv("SESSION_PATH", "data/bot")
 QUEUE_MAX = max(1, _env_int("QUEUE_MAX", 5))       # navbatda eng ko'pi bilan nechta kino
 WORKERS = max(1, min(_env_int("WORKERS", 1), 10))  # bir vaqtda nechta kino ishlanadi
+PREFETCH = max(0, min(_env_int("PREFETCH", 1), 3))  # navbatdagi nechta kinoni oldindan yuklab qo'yish (0 = o'chiq)
 ADMINS = {int(x) for x in os.getenv("ADMIN_IDS", "").replace(" ", "").split(",") if x.strip()}
 ALLOWED = {int(x) for x in os.getenv("ALLOWED_USERS", "").replace(" ", "").split(",") if x.strip()}
 
@@ -132,6 +133,9 @@ class Job:
     refunded: bool = False        # limit qaytarilganmi
     last_text: str = ""
     dl_task: object = None
+    src: object = None            # yuklangan kino fayli yo'li
+    show_progress: bool = False   # yuklash foizi xabarga yozilsinmi (ish boshlangach)
+    st: object = None
 
 
 NO_BUTTONS = ReplyInlineMarkup(rows=[])   # inline tugmalarni to'liq olib tashlaydi
@@ -874,6 +878,8 @@ async def on_cancel_yes(event):
         "❌ Bekor qilindi. Limitingiz sarflanmadi.\n\n🎬 Boshqa kino yuborishingiz mumkin.",
         buttons=NO_BUTTONS,
     )
+    if id(job) not in active:                # navbatda turgan edi: oldindan yuklangan fayl o'chiriladi
+        asyncio.create_task(cleanup_job(job))
     asyncio.create_task(refresh_queue())     # orqadagilarning o'rni yangilansin
 
 
@@ -899,20 +905,76 @@ async def send_reel(job: Job, path: Path, thumb: Path | None, caption: str, dura
     )
 
 
+def job_dir(job: Job) -> Path:
+    return WORK_DIR / f"{job.chat_id}_{job.msg.id}"
+
+
+def job_status(job: Job) -> "Status":
+    if job.st is None:
+        job.st = Status(job)
+    return job.st
+
+
+def start_download(job: Job) -> None:
+    """Kinoni yuklashni boshlaydi (navbat kelmasdan oldin ham chaqirilishi mumkin)."""
+    jobdir = job_dir(job)
+    jobdir.mkdir(parents=True, exist_ok=True)
+    job.src = jobdir / f"kino{job.msg.file.ext or '.mp4'}"
+
+    async def dl_progress(cur, total):
+        if job.show_progress:
+            pct = cur * 100 // total if total else 0
+            await job_status(job).set(f"📥 Kino yuklab olinmoqda: {pct}%  ({mb(cur)} / {mb(total)} MB)")
+
+    job.dl_task = asyncio.create_task(
+        client.download_media(job.msg, file=str(job.src), progress_callback=dl_progress))
+
+
+async def cleanup_job(job: Job) -> None:
+    """Navbatda turib bekor qilingan ishning yuklangan faylini o'chiradi."""
+    t = job.dl_task
+    if t is not None:
+        try:
+            await t
+        except (asyncio.CancelledError, Exception):
+            pass
+    shutil.rmtree(job_dir(job), ignore_errors=True)
+
+
+PREFETCH_TICK = 1.0
+
+
+async def prefetcher():
+    """Navbatdagi dastlabki PREFETCH ta kinoni oldindan yuklab qo'yadi."""
+    while True:
+        await asyncio.sleep(PREFETCH_TICK)
+        if PREFETCH <= 0:
+            continue
+        try:
+            for j in waiting_jobs()[:PREFETCH]:
+                if j.dl_task is not None or j.src is not None or j.cancel.is_set():
+                    continue
+                need = (j.msg.file.size or 0) * 1.2 + 500 * 1024 * 1024
+                if shutil.disk_usage(WORK_DIR).free < need:
+                    continue                 # joy kam: oldindan yuklamaymiz, navbati kelganda yuklanadi
+                start_download(j)
+        except Exception:
+            log.exception("Oldindan yuklashda xatolik")
+
+
 async def process(job: Job):
-    st = Status(job)
-    jobdir = WORK_DIR / f"{job.chat_id}_{job.msg.id}"
+    st = job_status(job)
+    jobdir = job_dir(job)
     jobdir.mkdir(parents=True, exist_ok=True)
     try:
-        src = jobdir / f"kino{job.msg.file.ext or '.mp4'}"
-
-        async def dl_progress(cur, total):
-            pct = cur * 100 // total if total else 0
-            await st.set(f"📥 Kino yuklab olinmoqda: {pct}%  ({mb(cur)} / {mb(total)} MB)")
-
-        await st.set("📥 Kino yuklab olinmoqda…", force=True)
-        job.dl_task = asyncio.create_task(
-            client.download_media(job.msg, file=str(src), progress_callback=dl_progress))
+        if job.dl_task is None:
+            start_download(job)
+        src = job.src
+        job.show_progress = True
+        if not job.dl_task.done():
+            await st.set("📥 Kino yuklab olinmoqda…", force=True)
+        else:
+            await st.set("📦 Kino tayyor, tahlil boshlanmoqda…", force=True)
         try:
             await job.dl_task
         except asyncio.CancelledError:
@@ -987,8 +1049,9 @@ async def worker():
         asyncio.create_task(refresh_queue())
         try:
             if job.cancel.is_set():          # navbatda turganida bekor qilingan
+                await cleanup_job(job)
                 continue
-            if not await wait_for_space(job):
+            if job.dl_task is None and not await wait_for_space(job):
                 raise RuntimeError("serverda joy yetarli emas, keyinroq urinib ko'ring")
             started = time.monotonic()
             active[id(job)] = (job, started)
@@ -1068,12 +1131,13 @@ async def main():
     except Exception as e:
         log.warning("Buyruqlar menyusini o'rnatib bo'lmadi: %s", e)
     me = await client.get_me()
-    log.info("Bot ishga tushdi: @%s  (reels: %d ta × %d s, ishchilar: %d)", me.username, CLIP_COUNT, DEFAULT_LEN, WORKERS)
+    log.info("Bot ishga tushdi: @%s  (reels: %d ta × %d s, ishchilar: %d, oldindan yuklash: %d)", me.username, CLIP_COUNT, DEFAULT_LEN, WORKERS, PREFETCH)
     if not ALLOWED:
         log.warning("ALLOWED_USERS bo'sh — botdan hamma foydalana oladi")
 
     for _ in range(WORKERS):
         asyncio.create_task(worker())
+    asyncio.create_task(prefetcher())
     await client.run_until_disconnected()
 
 
