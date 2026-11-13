@@ -175,6 +175,12 @@ def allowed(uid: int) -> bool:
     return not ALLOWED or uid in ALLOWED
 
 
+def deny_text(uid: int) -> str:
+    if uid not in ADMINS and plans.is_blocked(uid):
+        return "🚫 Siz botdan foydalanishdan cheklangansiz."
+    return f"Kechirasiz, bu bot shaxsiy.\nSizning ID: <code>{uid}</code>"
+
+
 async def seen(event) -> None:
     """Foydalanuvchini bazaga yozib boradi (statistika, qidiruv, tarqatish uchun)."""
     try:
@@ -206,7 +212,7 @@ async def on_start(event):
     uid = event.sender_id
     await seen(event)
     if not allowed(uid):
-        await event.reply(f"Kechirasiz, bu bot shaxsiy.\nSizning ID: <code>{uid}</code>", parse_mode="html")
+        await event.reply(deny_text(uid), parse_mode="html")
         return
     await event.reply(
         HELP.format(count=max_clips(uid), length=user_len.get(uid, DEFAULT_LEN), uid=uid,
@@ -264,7 +270,7 @@ async def on_media(event):
     uid = event.sender_id
     await seen(event)
     if not allowed(uid):
-        await event.reply(f"Kechirasiz, bu bot shaxsiy.\nSizning ID: <code>{uid}</code>", parse_mode="html")
+        await event.reply(deny_text(uid), parse_mode="html")
         return
     if await handle_receipt(event):
         return
