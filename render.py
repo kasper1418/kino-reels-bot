@@ -1,15 +1,13 @@
 """
 Tanlangan oraliqni vertikal (1080x1920) reels videoga aylantirish.
 
-Ko'rinish: o'rtada kino kadri, orqa fonda o'sha kadrning xiralashtirilgan
-kattalashtirilgan nusxasi. Tepada ixtiyoriy sarlavha, pastda ixtiyoriy
-kanal nomi (watermark). Ovoz telefon uchun normallashtiriladi.
+Ko'rinish: o'rtada kino kadri, tepasi va pasti qora fon. Matn yo'q.
+Ovoz telefon uchun normallashtiriladi.
 """
 from __future__ import annotations
 
 import os
 import subprocess
-import textwrap
 from pathlib import Path
 
 from analyze import Clip, MediaInfo
@@ -46,50 +44,25 @@ def _drawtext(textfile: Path, font: str, size: int, y: int, color: str = "white"
 def build_filter(info: MediaInfo, length: float, workdir: Path,
                  title: str | None, watermark: str | None, font: str,
                  zoom: float = 1.0) -> tuple[str, bool]:
+    """Qora fon ustida markazda kino kadri. Matn yo'q (title/watermark e'tiborsiz)."""
     sw, sh, fw, fh = _fg_size(info, zoom)
-    top_h = (OUT_H - fh) // 2
 
-    pre = f"[0:{info.video_index}]"
+    chain = f"[0:{info.video_index}]"
     if info.crop:
         cw, ch, cx, cy = info.crop
-        pre += f"crop={cw}:{ch}:{cx}:{cy},"
-    pre += "split=2[b0][f0]"
-
-    parts = [
-        pre,
-        f"[b0]scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=increase,"
-        f"crop={OUT_W}:{OUT_H},setsar=1,scale=216:384,gblur=sigma=6,"
-        f"scale={OUT_W}:{OUT_H},eq=brightness=-0.12:saturation=1.15[bg]",
-        f"[f0]scale={sw}:{sh},setsar=1" + (f",crop={fw}:{fh}" if (sw, sh) != (fw, fh) else "") + "[fg]",
-    ]
-
-    post = ["overlay=(W-w)/2:(H-h)/2"]
-    has_font = bool(font) and os.path.exists(font)
-
-    if title and has_font:
-        lines = textwrap.wrap(title.strip(), width=20)[:3]
-        size, gap = 62, 16
-        block = len(lines) * size + (len(lines) - 1) * gap
-        y = max(90, top_h - 70 - block)
-        for i, line in enumerate(lines):
-            tf = workdir / f"title_{i}.txt"
-            tf.write_text(line, encoding="utf-8")
-            post.append(_drawtext(tf, font, size, y + i * (size + gap)))
-
-    if watermark and has_font:
-        tf = workdir / "watermark.txt"
-        tf.write_text(watermark.strip()[:40], encoding="utf-8")
-        bottom_start = top_h + fh
-        y = bottom_start + 60 if OUT_H - bottom_start > 200 else OUT_H - 160
-        post.append(_drawtext(tf, font, 44, y, color="white@0.9"))
+        chain += f"crop={cw}:{ch}:{cx}:{cy},"
+    chain += f"scale={sw}:{sh},setsar=1"
+    if (sw, sh) != (fw, fh):
+        chain += f",crop={fw}:{fh}"          # kattalashtirilganda yon tomonlari kesiladi
 
     fade_out = max(0.0, length - 0.6)
-    post += [
-        "fade=t=in:st=0:d=0.4",
-        f"fade=t=out:st={fade_out:.2f}:d=0.6",
-        "format=yuv420p",
-    ]
-    parts.append("[bg][fg]" + ",".join(post) + "[v]")
+    chain += (
+        f",pad={OUT_W}:{OUT_H}:(ow-iw)/2:(oh-ih)/2:black"
+        ",fade=t=in:st=0:d=0.4"
+        f",fade=t=out:st={fade_out:.2f}:d=0.6"
+        ",format=yuv420p[v]"
+    )
+    parts = [chain]
 
     has_audio = info.audio_index is not None
     if has_audio:

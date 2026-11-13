@@ -42,7 +42,7 @@ CLIP_COUNT = max(1, min(_env_int("CLIP_COUNT", 10), 20))
 DEFAULT_LEN = max(15, min(_env_int("CLIP_LEN", 40), 90))
 WATERMARK = os.getenv("WATERMARK", "").strip() or None
 FONT_PATH = os.getenv("FONT_PATH", render.DEFAULT_FONT)
-ZOOM = float(os.getenv("KADR_ZOOM", "1.0") or 1.0)
+ZOOM = float(os.getenv("KADR_ZOOM", "1.3") or 1.3)
 WORK_DIR = Path(os.getenv("WORK_DIR", "data/work"))
 SESSION = os.getenv("SESSION_PATH", "data/bot")
 DAILY_LIMIT = max(1, _env_int("DAILY_LIMIT", 3))   # bir odamga kuniga nechta kino
@@ -94,8 +94,6 @@ HELP = (
     "🎬 Salom! Menga kino yuboring — eng qiziq joylaridan {count} ta "
     "vertikal (9:16) reels tayyorlab beraman.\n\n"
     "• Kinoni video yoki fayl qilib yuboring (MP4, MKV, AVI…), 2 GB gacha.\n"
-    "• Kino ostiga matn yozsangiz (masalan, kino nomi), u har bir reelsning "
-    "tepasiga yoziladi.\n"
     "• Reels uzunligi hozir: {length} soniya. O'zgartirish: /uzunlik 30 "
     "(15–90 oralig'ida).\n"
     "• Har kuni {daily} ta kino ishlata olasiz.\n\n"
@@ -220,7 +218,7 @@ async def on_media(event):
         await event.reply("❌ Serverda joy yetarli emas. Keyinroq urinib ko'ring.")
         return
 
-    title = (msg.message or "").strip()[:80] or None
+    title = None  # reelsda matn yo'q
     status = await event.reply("⏳ Qabul qilindi…")
     await queue.put(Job(event.chat_id, uid, msg, status, user_len.get(uid, DEFAULT_LEN), title))
     add_usage(uid, 1)
