@@ -20,7 +20,7 @@ def _price(name: str, default: int) -> int:
 
 # key: (nomi, kuniga kino, eng ko'p variant, navbat ustuvorligi (kichik = oldin), narx so'm)
 PLANS = {
-    "free": {"name": "Bepul", "daily": 1, "clips": 3, "prio": 2, "price": 0},
+    "free": {"name": "Bepul", "daily": 1, "clips": 2, "prio": 2, "price": 0},
     "start": {"name": "Start", "daily": 3, "clips": 5, "prio": 1, "price": _price("PRICE_START", 29000)},
     "pro": {"name": "Pro", "daily": 10, "clips": 5, "prio": 0, "price": _price("PRICE_PRO", 59000)},
 }

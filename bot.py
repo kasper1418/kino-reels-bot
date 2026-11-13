@@ -273,6 +273,8 @@ async def on_text(event):
         if pending[uid]["step"] == "count":
             if text.isdigit() and 1 <= int(text) <= max_clips(uid):
                 await set_count(uid, int(text))
+            elif text.isdigit() and max_clips(uid) < int(text) <= MAX_CLIPS:
+                await offer_upgrade(event, int(text))
             else:
                 await event.reply(f"1 dan {max_clips(uid)} gacha raqam yozing yoki tugmani bosing.")
             return
@@ -453,14 +455,31 @@ def color_buttons():
     ]
 
 
-ASK_COUNT = (
-    "3️⃣ Nechta <b>variant</b> (reels) kerak?\n"
-    "Bot kinoning eng qiziq joylaridan shuncha reels tayyorlaydi. 1 dan 5 gacha tanlang."
-)
+def ask_count_text(uid: int) -> str:
+    mx = max_clips(uid)
+    text = (
+        "3️⃣ Nechta <b>variant</b> (reels) kerak?\n"
+        "Bot kinoning eng qiziq joylaridan shuncha reels tayyorlaydi."
+    )
+    if mx < MAX_CLIPS:
+        text += f"\n\n🆓 Tarifingizda 1–{mx} ta variant. 🔒 — pullik tariflarda (/tarif)."
+    return text
 
 
 def count_buttons(uid: int):
-    return [[Button.inline(str(i), f"n{i}".encode()) for i in range(1, max_clips(uid) + 1)]]
+    """1–5 tugmalar; tarifda yo'q variantlar 🔒 bilan ko'rinadi (bosilsa, tarif taklif qilinadi)."""
+    mx = max_clips(uid)
+    return [[Button.inline(str(i) if i <= mx else f"🔒 {i}", f"n{i}".encode()) for i in range(1, MAX_CLIPS + 1)]]
+
+
+async def offer_upgrade(event, n: int):
+    uid = event.sender_id
+    await event.reply(
+        f"🔒 <b>{n} ta variant</b> pullik tariflarda ochiladi.\n"
+        f"Hozirgi tarifingiz (<b>{plans.info(uid)['name']}</b>) bilan 1–{max_clips(uid)} ta variant tanlash mumkin.\n\n"
+        "💎 Ko'proq variant uchun tarifni oshiring. Kinongiz saqlanib turadi: tarifdan keyin tanlashni davom ettirasiz "
+        f"yoki 1–{max_clips(uid)} dan birini hoziroq tanlang.",
+        buttons=[[Button.inline("💎 Tariflarni ko'rish", b"tarif")]], parse_mode="html")
 
 
 async def advance(uid: int, value: str | None):
@@ -483,7 +502,7 @@ async def advance(uid: int, value: str | None):
     elif p["step"] == "title":
         p["title"] = value
         p["step"] = "count"
-        await p["status"].edit(ASK_COUNT, buttons=count_buttons(uid), parse_mode="html")
+        await p["status"].edit(ask_count_text(uid), buttons=count_buttons(uid), parse_mode="html")
 
 
 async def set_count(uid: int, n: int):
@@ -512,7 +531,8 @@ async def on_count(event):
         return
     n = int(event.data[1:])
     if n > max_clips(uid):
-        await event.answer("Bu tarifda bunchalik variant yo'q. /tarif", alert=True)
+        await event.answer("🔒 Bu variant pullik tarifda")
+        await offer_upgrade(event, n)
         return
     await event.answer()
     await set_count(uid, n)
