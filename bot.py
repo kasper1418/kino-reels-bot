@@ -91,8 +91,7 @@ HELP = (
     "<code>*so'z*</code> (sariq) yoki <code>[so'z]</code> (qizil) deb yozing.\n"
     "• Reels uzunligi hozir: {length} soniya. O'zgartirish: /uzunlik 30 "
     "(15–90 oralig'ida).\n"
-    "• Tarifingiz: <b>{plan}</b> — kuniga {daily} ta kino. Tariflar: /tarif\n\n"
-    "Sizning ID: <code>{uid}</code>"
+    "• Tarifingiz: <b>{plan}</b> — kuniga {daily} ta kino. Tariflar: /tarif"
 )
 
 client: TelegramClient
