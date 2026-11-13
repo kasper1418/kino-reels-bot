@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import asyncio
 import html
+import json
 import logging
 import os
 import shutil
 import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -43,10 +45,50 @@ FONT_PATH = os.getenv("FONT_PATH", render.DEFAULT_FONT)
 ZOOM = float(os.getenv("KADR_ZOOM", "1.0") or 1.0)
 WORK_DIR = Path(os.getenv("WORK_DIR", "data/work"))
 SESSION = os.getenv("SESSION_PATH", "data/bot")
+DAILY_LIMIT = max(1, _env_int("DAILY_LIMIT", 3))   # bir odamga kuniga nechta kino
+QUEUE_MAX = max(1, _env_int("QUEUE_MAX", 5))       # navbatda eng ko'pi bilan nechta kino
+ADMINS = {int(x) for x in os.getenv("ADMIN_IDS", "").replace(" ", "").split(",") if x.strip()}
+LIMITS_FILE = Path(os.getenv("LIMITS_FILE", str(Path(SESSION).parent / "limits.json")))
 ALLOWED = {int(x) for x in os.getenv("ALLOWED_USERS", "").replace(" ", "").split(",") if x.strip()}
 
 VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v", ".ts", ".wmv",
               ".flv", ".mpg", ".mpeg", ".3gp", ".vob"}
+
+# ----------------------------------------------------------- kunlik cheklov
+
+def _today() -> str:
+    return datetime.now(timezone(timedelta(hours=5))).strftime("%Y-%m-%d")  # Toshkent vaqti
+
+
+def _load_usage() -> dict:
+    try:
+        data = json.loads(LIMITS_FILE.read_text("utf-8"))
+        if data.get("date") == _today():
+            return data
+    except (OSError, ValueError):
+        pass
+    return {"date": _today(), "users": {}}
+
+
+def used_today(uid: int) -> int:
+    return int(_load_usage()["users"].get(str(uid), 0))
+
+
+def left_today(uid: int) -> int:
+    return max(0, DAILY_LIMIT - used_today(uid))
+
+
+def add_usage(uid: int, delta: int) -> None:
+    if uid in ADMINS:
+        return
+    data = _load_usage()
+    data["users"][str(uid)] = max(0, int(data["users"].get(str(uid), 0)) + delta)
+    try:
+        LIMITS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        LIMITS_FILE.write_text(json.dumps(data), "utf-8")
+    except OSError as e:
+        log.warning("Limitni saqlab bo'lmadi: %s", e)
+
 
 HELP = (
     "🎬 Salom! Menga kino yuboring — eng qiziq joylaridan {count} ta "
@@ -55,7 +97,8 @@ HELP = (
     "• Kino ostiga matn yozsangiz (masalan, kino nomi), u har bir reelsning "
     "tepasiga yoziladi.\n"
     "• Reels uzunligi hozir: {length} soniya. O'zgartirish: /uzunlik 30 "
-    "(15–90 oralig'ida).\n\n"
+    "(15–90 oralig'ida).\n"
+    "• Har kuni {daily} ta kino ishlata olasiz.\n\n"
     "Sizning ID: <code>{uid}</code>"
 )
 
@@ -124,7 +167,7 @@ async def on_start(event):
         await event.reply(f"Kechirasiz, bu bot shaxsiy.\nSizning ID: <code>{uid}</code>", parse_mode="html")
         return
     await event.reply(
-        HELP.format(count=CLIP_COUNT, length=user_len.get(uid, DEFAULT_LEN), uid=uid),
+        HELP.format(count=CLIP_COUNT, length=user_len.get(uid, DEFAULT_LEN), uid=uid, daily=DAILY_LIMIT),
         parse_mode="html",
     )
 
@@ -160,6 +203,16 @@ async def on_media(event):
         await event.reply("Bu video fayl emas. Iltimos, kinoni video yoki MP4/MKV fayl qilib yuboring.")
         return
 
+    if uid not in ADMINS and left_today(uid) <= 0:
+        await event.reply(
+            f"⛔ Bugungi limit tugadi: kuniga {DAILY_LIMIT} ta kino. Ertaga yana urinib ko'ring "
+            "(yangi kun Toshkent vaqti bilan yarim tundan boshlanadi)."
+        )
+        return
+    if queue.qsize() >= QUEUE_MAX:
+        await event.reply("⏳ Hozir navbat to'la. Bir necha daqiqadan keyin qayta yuboring.")
+        return
+
     size = msg.file.size or 0
     WORK_DIR.mkdir(parents=True, exist_ok=True)
     free = shutil.disk_usage(WORK_DIR).free
@@ -170,9 +223,12 @@ async def on_media(event):
     title = (msg.message or "").strip()[:80] or None
     status = await event.reply("⏳ Qabul qilindi…")
     await queue.put(Job(event.chat_id, uid, msg, status, user_len.get(uid, DEFAULT_LEN), title))
+    add_usage(uid, 1)
     pos = queue.qsize() + (1 if busy else 0)
     if pos > 1:
         await Status(status).set(f"⏳ Navbatdasiz: {pos}-o'rin. Oldingi kino tugashi bilan boshlayman.")
+    elif uid not in ADMINS:
+        await Status(status).set(f"⏳ Qabul qilindi. Bugun yana {left_today(uid)} ta kino yuborishingiz mumkin.", force=True)
 
 
 # -------------------------------------------------------------------- worker
@@ -250,6 +306,7 @@ async def worker():
             await process(job)
         except Exception as e:
             log.exception("Ish bajarilmadi")
+            add_usage(job.user_id, -1)  # muvaffaqiyatsiz bo'lsa, limit qaytariladi
             await Status(job.status).set(f"❌ Xatolik yuz berdi: {html.escape(str(e))[:300]}", force=True)
         finally:
             busy = False
