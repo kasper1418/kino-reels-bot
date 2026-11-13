@@ -111,7 +111,7 @@ def make_overlay(title: str | None, code: str | None, top_h: int, out: Path,
     words = _parse(title)
     if words:
         if top_h >= 420:                    # Instagram yuqori paneli ostidan, kadrgacha
-            y0, y1 = 190, top_h - 40
+            y0, y1 = 190, top_h - 50
         else:                               # tik video: yuqorida, rasm ustida
             y0, y1 = 120, 120 + 360
         region_h = max(120, y1 - y0)
@@ -132,7 +132,10 @@ def make_overlay(title: str | None, code: str | None, top_h: int, out: Path,
             chosen = (font, lines[:5], space, int(32 * 1.22))
 
         font, lines, space, line_h = chosen
-        y = y0 + max(0, (region_h - line_h * len(lines)) // 2)
+        if top_h >= 420:                    # videoga yaqin: matn pastga, kadrdan biroz tepada
+            y = max(y0, y1 - line_h * len(lines))
+        else:
+            y = y0 + max(0, (region_h - line_h * len(lines)) // 2)
         for ln in lines:                    # oq matn, ajratilgan so'zlar sariq, qora soyali
             total = sum(w[2] for w in ln) + space * (len(ln) - 1)
             x = (W - total) / 2
