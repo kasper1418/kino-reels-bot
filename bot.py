@@ -85,15 +85,25 @@ def som(n: int) -> str:
 
 
 HELP = (
-    "🎬 Salom! Menga kino yuboring — eng qiziq joylaridan {count} tagacha "
-    "vertikal (9:16) reels tayyorlab beraman.\n\n"
-    "• Kinoni video yoki fayl qilib yuboring (MP4, MKV, AVI…), 2 GB gacha.\n"
-    "• Kinoni yuborgach, bot <b>kino kodi</b> va <b>matn</b> so'raydi (ixtiyoriy). Yozsangiz, "
-    "matn videoning tepasida, kod pastida chiroyli shriftda chiqadi. Ba'zi so'zlarni rangli qilish uchun "
-    "<code>*so'z*</code> (sariq) yoki <code>[so'z]</code> (qizil) deb yozing.\n"
-    "• Reels uzunligi hozir: {length} soniya. O'zgartirish: /uzunlik 30 "
-    "(15–90 oralig'ida).\n"
-    "• Tarifingiz: <b>{plan}</b> — kuniga {daily} ta kino. Tariflar: /tarif"
+    "🎬 <b>ReelCut — kinodan reels yasaydigan bot</b>\n\n"
+    "Uzun kinoni yuborasiz, men uning <b>eng qiziq joylarini topib</b>, Instagram Reels, TikTok va "
+    "YouTube Shorts uchun tayyor <b>vertikal (9:16) videolar</b> qirqib beraman ✂️🔥\n\n"
+    "━━━━━━━━━━━━━━\n"
+    "📌 <b>Qanday ishlaydi?</b>\n\n"
+    "1️⃣ 🎞 Kinoni shu yerga <b>yuboring</b> (MP4, MKV, AVI… 2 GB gacha)\n"
+    "2️⃣ 🔢 <b>Kino kodi</b> yozing — videoning pastida chiqadi\n"
+    "3️⃣ ✍️ <b>Matn</b> yozing — videoning tepasida chiqadi\n"
+    "4️⃣ 🎯 <b>1–{count} ta variant</b> tanlang\n"
+    "5️⃣ 🚀 Tayyor reelslarni oling!\n\n"
+    "━━━━━━━━━━━━━━\n"
+    "✨ <b>Imkoniyatlar</b>\n\n"
+    "🎨 Matndagi so'zni rangli qiling: <code>*so'z*</code> — 🟡 sariq, <code>[so'z]</code> — 🔴 qizil\n"
+    "🖤 Tepa va pastda toza qora fon, ortiqcha yozuvlarsiz\n"
+    "⏱ Reels uzunligi: <b>{length} soniya</b> (⏱ Uzunlik tugmasi orqali o'zgartiring)\n\n"
+    "━━━━━━━━━━━━━━\n"
+    "💎 Tarifingiz: <b>{plan}</b> — kuniga <b>{daily}</b> ta kino\n"
+    "Ko'proq kerak bo'lsa: /tarif\n\n"
+    "👇 <b>Boshlash uchun kinoni yuboring!</b>"
 )
 
 client: TelegramClient
