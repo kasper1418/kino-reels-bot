@@ -92,3 +92,11 @@ venv/bin/python cli.py kino.mp4 --soni 10 --uzunlik 40 --matn "Kino nomi" --chiq
 
 - Bot qiziq joyni **ovoz va harakatga qarab** topadi. Jang, quvish, portlash va baland musiqali sahnalarni yaxshi topadi. Jim, lekin kuchli dialogli sahnalarni o'tkazib yuborishi mumkin. Shuning uchun 10 ta variant beriladi va eng yaxshisini o'zingiz tanlaysiz.
 - **Mualliflik huquqi:** boshqalarning kinosidan olingan reels Instagram yoki TikTok'da bloklanishi yoki ovozi o'chirilishi mumkin.
+
+## Tariflar va to'lov
+
+- Bepul: kuniga 1 kino (3 tagacha variant). Start (29 000 so'm): kuniga 3 kino. Pro (59 000 so'm): kuniga 10 kino, navbatda birinchi.
+- To'lov: foydalanuvchi /tarif → tarif tanlaydi → kartaga o'tkazadi → chek rasmini yuboradi → admin ✅ tugmasi bilan tasdiqlaydi.
+- `.env`: `ADMIN_IDS`, `CARD_NUMBER`, `CARD_HOLDER`, `PRICE_START`, `PRICE_PRO`, `PLAN_DAYS`.
+- Admin buyruqlari: `/grant ID start|pro|free [kun]`, `/stats`. Foydalanuvchi: `/tarif`, `/profil`.
+- Ma'lumotlar SQLite faylida (`data/bot.db`).

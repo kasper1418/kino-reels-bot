@@ -24,6 +24,7 @@ from telethon.errors import FloodWaitError, MessageNotModifiedError
 from telethon.tl.types import DocumentAttributeVideo, ReplyInlineMarkup
 
 import analyze
+import plans
 import render
 import textoverlay
 
@@ -46,49 +47,40 @@ DEFAULT_LEN = max(15, min(_env_int("CLIP_LEN", 40), 90))
 ZOOM = float(os.getenv("KADR_ZOOM", "1.3") or 1.3)
 WORK_DIR = Path(os.getenv("WORK_DIR", "data/work"))
 SESSION = os.getenv("SESSION_PATH", "data/bot")
-DAILY_LIMIT = max(1, _env_int("DAILY_LIMIT", 1))   # bir odamga kuniga nechta kino
 QUEUE_MAX = max(1, _env_int("QUEUE_MAX", 5))       # navbatda eng ko'pi bilan nechta kino
 ADMINS = {int(x) for x in os.getenv("ADMIN_IDS", "").replace(" ", "").split(",") if x.strip()}
-LIMITS_FILE = Path(os.getenv("LIMITS_FILE", str(Path(SESSION).parent / "limits.json")))
 ALLOWED = {int(x) for x in os.getenv("ALLOWED_USERS", "").replace(" ", "").split(",") if x.strip()}
 
 VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v", ".ts", ".wmv",
               ".flv", ".mpg", ".mpeg", ".3gp", ".vob"}
 
-# ----------------------------------------------------------- kunlik cheklov
+# ----------------------------------------------------------- kunlik cheklov (tarifga qarab)
 
-def _today() -> str:
-    return datetime.now(timezone(timedelta(hours=5))).strftime("%Y-%m-%d")  # Toshkent vaqti
-
-
-def _load_usage() -> dict:
-    try:
-        data = json.loads(LIMITS_FILE.read_text("utf-8"))
-        if data.get("date") == _today():
-            return data
-    except (OSError, ValueError):
-        pass
-    return {"date": _today(), "users": {}}
-
-
-def used_today(uid: int) -> int:
-    return int(_load_usage()["users"].get(str(uid), 0))
+CARD_NUMBER = os.getenv("CARD_NUMBER", "").strip()
+CARD_HOLDER = os.getenv("CARD_HOLDER", "").strip()
+DB_FILE = Path(os.getenv("DB_FILE", str(Path(SESSION).parent / "bot.db")))
 
 
 def left_today(uid: int) -> int:
-    return max(0, DAILY_LIMIT - used_today(uid))
+    return plans.left_today(uid)
 
 
 def add_usage(uid: int, delta: int) -> None:
     if uid in ADMINS:
         return
-    data = _load_usage()
-    data["users"][str(uid)] = max(0, int(data["users"].get(str(uid), 0)) + delta)
-    try:
-        LIMITS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        LIMITS_FILE.write_text(json.dumps(data), "utf-8")
-    except OSError as e:
-        log.warning("Limitni saqlab bo'lmadi: %s", e)
+    plans.add_usage(uid, delta)
+
+
+def max_clips(uid: int) -> int:
+    return MAX_CLIPS if uid in ADMINS else min(MAX_CLIPS, plans.info(uid)["clips"])
+
+
+def daily_of(uid: int) -> int:
+    return plans.info(uid)["daily"]
+
+
+def som(n: int) -> str:
+    return f"{n:,}".replace(",", " ")
 
 
 HELP = (
@@ -100,12 +92,13 @@ HELP = (
     "<code>*so'z*</code> (sariq) yoki <code>[so'z]</code> (qizil) deb yozing.\n"
     "• Reels uzunligi hozir: {length} soniya. O'zgartirish: /uzunlik 30 "
     "(15–90 oralig'ida).\n"
-    "• Har kuni {daily} ta kino ishlata olasiz.\n\n"
+    "• Tarifingiz: <b>{plan}</b> — kuniga {daily} ta kino. Tariflar: /tarif\n\n"
     "Sizning ID: <code>{uid}</code>"
 )
 
 client: TelegramClient
-queue: asyncio.Queue
+queue: asyncio.PriorityQueue
+seq = 0
 busy = False
 user_len: dict[int, int] = {}
 jobs: dict[tuple, "Job"] = {}   # (chat_id, status_id) -> ish; bekor qilish uchun
@@ -204,7 +197,8 @@ async def on_start(event):
         await event.reply(f"Kechirasiz, bu bot shaxsiy.\nSizning ID: <code>{uid}</code>", parse_mode="html")
         return
     await event.reply(
-        HELP.format(count=MAX_CLIPS, length=user_len.get(uid, DEFAULT_LEN), uid=uid, daily=DAILY_LIMIT),
+        HELP.format(count=max_clips(uid), length=user_len.get(uid, DEFAULT_LEN), uid=uid,
+                    daily=daily_of(uid), plan=plans.info(uid)["name"]),
         parse_mode="html",
     )
 
@@ -229,13 +223,16 @@ async def on_text(event):
     uid = event.sender_id
     if not allowed(uid):
         return
+    if uid in awaiting and uid not in pending:
+        await event.reply("To'lov chekining skrinshotini rasm qilib yuboring (yoki /tarif orqali bekor qiling).")
+        return
     if uid in pending:
         text = (event.raw_text or "").strip()
         if pending[uid]["step"] == "count":
-            if text.isdigit() and 1 <= int(text) <= MAX_CLIPS:
+            if text.isdigit() and 1 <= int(text) <= max_clips(uid):
                 await set_count(uid, int(text))
             else:
-                await event.reply(f"1 dan {MAX_CLIPS} gacha raqam yozing yoki tugmani bosing.")
+                await event.reply(f"1 dan {max_clips(uid)} gacha raqam yozing yoki tugmani bosing.")
             return
         if pending[uid]["step"] == "color":
             await event.reply("Rangni yuqoridagi tugmalardan tanlang 🎨")
@@ -251,15 +248,14 @@ async def on_media(event):
     if not allowed(uid):
         await event.reply(f"Kechirasiz, bu bot shaxsiy.\nSizning ID: <code>{uid}</code>", parse_mode="html")
         return
+    if await handle_receipt(event):
+        return
     if not is_movie(msg):
         await event.reply("Bu video fayl emas. Iltimos, kinoni video yoki MP4/MKV fayl qilib yuboring.")
         return
 
     if uid not in ADMINS and left_today(uid) <= 0:
-        await event.reply(
-            f"⛔ Bugungi limit tugadi: kuniga {DAILY_LIMIT} ta kino. Ertaga yana urinib ko'ring "
-            "(yangi kun Toshkent vaqti bilan yarim tundan boshlanadi)."
-        )
+        await event.reply(LIMIT_TEXT.format(n=daily_of(uid)), buttons=TARIF_BTN, parse_mode="html")
         return
     if queue.qsize() >= QUEUE_MAX:
         await event.reply("⏳ Hozir navbat to'la. Bir necha daqiqadan keyin qayta yuboring.")
@@ -308,9 +304,7 @@ async def enqueue(uid: int):
         return
     status = p["status"]
     if uid not in ADMINS and left_today(uid) <= 0:
-        await status.edit(
-            f"⛔ Bugungi limit tugadi: kuniga {DAILY_LIMIT} ta kino. Ertaga yana urinib ko'ring "
-            "(yangi kun Toshkent vaqti bilan yarim tundan boshlanadi).", buttons=NO_BUTTONS)
+        await status.edit(LIMIT_TEXT.format(n=daily_of(uid)), buttons=TARIF_BTN, parse_mode="html")
         return
     if queue.qsize() >= QUEUE_MAX:
         await status.edit("⏳ Hozir navbat to'la. Bir necha daqiqadan keyin kinoni qayta yuboring.", buttons=NO_BUTTONS)
@@ -319,7 +313,9 @@ async def enqueue(uid: int):
               p["title"], p["code"], p.get("count", CLIP_COUNT))
     job.code_color = p.get("code_color", "yellow")
     jobs[(p["chat_id"], status.id)] = job
-    await queue.put(job)
+    global seq
+    seq += 1
+    await queue.put((0 if uid in ADMINS else plans.info(uid)["prio"], seq, job))
     add_usage(uid, 1)
     pos = queue.qsize() + (1 if busy else 0)
     if pos > 1:
@@ -352,8 +348,8 @@ ASK_COUNT = (
 )
 
 
-def count_buttons():
-    return [[Button.inline(str(i), f"n{i}".encode()) for i in range(1, MAX_CLIPS + 1)]]
+def count_buttons(uid: int):
+    return [[Button.inline(str(i), f"n{i}".encode()) for i in range(1, max_clips(uid) + 1)]]
 
 
 async def advance(uid: int, value: str | None):
@@ -376,7 +372,7 @@ async def advance(uid: int, value: str | None):
     elif p["step"] == "title":
         p["title"] = value
         p["step"] = "count"
-        await p["status"].edit(ASK_COUNT, buttons=count_buttons(), parse_mode="html")
+        await p["status"].edit(ASK_COUNT, buttons=count_buttons(uid), parse_mode="html")
 
 
 async def set_count(uid: int, n: int):
@@ -403,8 +399,244 @@ async def on_count(event):
     if not allowed(uid) or not p or p["step"] != "count":
         await event.answer("Bu so'rov eskirgan. Kinoni qayta yuboring.", alert=True)
         return
+    n = int(event.data[1:])
+    if n > max_clips(uid):
+        await event.answer("Bu tarifda bunchalik variant yo'q. /tarif", alert=True)
+        return
     await event.answer()
-    await set_count(uid, int(event.data[1:]))
+    await set_count(uid, n)
+
+
+# ------------------------------------------------------------------ tariflar va to'lov
+
+LIMIT_TEXT = (
+    "⛔ Bugungi limit tugadi: tarifingizda kuniga {n} ta kino. Yangi kun Toshkent vaqti bilan "
+    "yarim tundan boshlanadi.\n\n💎 Ko'proq kino kerak bo'lsa, tarifni oshiring."
+)
+TARIF_BTN = [[Button.inline("💎 Tariflar", b"tarif")]]
+awaiting: dict[int, int] = {}     # uid -> kvitansiya kutilayotgan to'lov raqami
+
+
+def tarif_text(uid: int) -> str:
+    cur = plans.plan_of(uid)
+    P = plans.PLANS
+    lines = ["💎 <b>Tariflar</b>\n"]
+    for key in ("free", "start", "pro"):
+        p = P[key]
+        mark = " ✅ (sizniki)" if key == cur else ""
+        price = "bepul" if not p["price"] else f"{som(p['price'])} so'm / {plans.PLAN_DAYS} kun"
+        extra = ""
+        if key == "start":
+            extra = "\n   • navbatda oldinroq"
+        elif key == "pro":
+            extra = "\n   • navbatda birinchi"
+        lines.append(
+            f"<b>{p['name']}</b>{mark} — {price}\n"
+            f"   • kuniga {p['daily']} ta kino\n"
+            f"   • har kinodan {p['clips']} tagacha reels{extra}\n"
+        )
+    if cur != "free":
+        lines.append(f"📅 Tarifingiz {plans.fmt_until(plans.until_of(uid))} gacha amal qiladi.")
+    return "\n".join(lines)
+
+
+def tarif_buttons():
+    P = plans.PLANS
+    return [
+        [Button.inline(f"🚀 Start — {som(P['start']['price'])} so'm", b"buy:start")],
+        [Button.inline(f"👑 Pro — {som(P['pro']['price'])} so'm", b"buy:pro")],
+    ]
+
+
+async def on_tarif(event):
+    uid = event.sender_id
+    if not allowed(uid):
+        return
+    await event.reply(tarif_text(uid), buttons=tarif_buttons(), parse_mode="html")
+
+
+async def on_tarif_btn(event):
+    uid = event.sender_id
+    await event.answer()
+    await event.reply(tarif_text(uid), buttons=tarif_buttons(), parse_mode="html")
+
+
+async def on_profile(event):
+    uid = event.sender_id
+    if not allowed(uid):
+        return
+    p = plans.info(uid)
+    text = (
+        f"👤 <b>Profil</b>\nID: <code>{uid}</code>\n"
+        f"Tarif: <b>{p['name']}</b>\n"
+    )
+    if plans.plan_of(uid) != "free":
+        text += f"Amal qilish muddati: {plans.fmt_until(plans.until_of(uid))} gacha\n"
+    if uid in ADMINS:
+        text += "Bugun: cheksiz (admin)\n"
+    else:
+        text += f"Bugun qoldi: {left_today(uid)} / {p['daily']} ta kino\n"
+    await event.reply(text, buttons=[[Button.inline("💎 Tariflar", b"tarif")]], parse_mode="html")
+
+
+async def on_buy(event):
+    uid = event.sender_id
+    plan = event.data.decode().split(":", 1)[1]
+    if not allowed(uid) or plan not in ("start", "pro"):
+        await event.answer()
+        return
+    if not CARD_NUMBER or not ADMINS:
+        await event.answer("To'lov hozircha sozlanmagan. Keyinroq urinib ko'ring.", alert=True)
+        return
+    await event.answer()
+    pid = plans.new_payment(uid, plan)
+    awaiting[uid] = pid
+    P = plans.PLANS[plan]
+    holder = f"\nKarta egasi: <b>{html.escape(CARD_HOLDER)}</b>" if CARD_HOLDER else ""
+    await event.reply(
+        f"💳 <b>{P['name']}</b> tarifi — <b>{som(P['price'])} so'm</b> ({plans.PLAN_DAYS} kun)\n\n"
+        f"1️⃣ Quyidagi kartaga (Uzcard / Humo) aynan shu summani o'tkazing:\n"
+        f"<code>{html.escape(CARD_NUMBER)}</code>{holder}\n\n"
+        f"2️⃣ To'lov <b>chekining skrinshotini</b> shu yerga rasm qilib yuboring.\n\n"
+        f"3️⃣ Admin tekshirib tasdiqlagach, tarif darhol yoqiladi va sizga xabar keladi.\n\n"
+        f"To'lov raqami: #{pid}",
+        buttons=[[Button.inline("✖️ Bekor qilish", f"payx:{pid}".encode())]],
+        parse_mode="html",
+    )
+
+
+async def on_pay_cancel(event):
+    uid = event.sender_id
+    pid = int(event.data.decode().split(":", 1)[1])
+    pay = plans.get_payment(pid)
+    if pay and pay[1] == uid and pay[4] == "new":
+        plans.set_payment(pid, "cancel")
+        awaiting.pop(uid, None)
+        await event.answer("Bekor qilindi")
+        await event.edit("✖️ To'lov bekor qilindi.", buttons=NO_BUTTONS)
+    else:
+        await event.answer()
+
+
+async def handle_receipt(event) -> bool:
+    """Foydalanuvchi to'lov kutayotgan bo'lsa, rasmni admin(lar)ga yuboradi."""
+    msg = event.message
+    uid = event.sender_id
+    pid = awaiting.get(uid)
+    if pid is None:
+        return False
+    is_img = bool(msg.photo) or (msg.file and (msg.file.mime_type or "").startswith("image/"))
+    if not is_img:
+        await event.reply("To'lov chekining skrinshotini rasm qilib yuboring yoki to'lovni bekor qiling.")
+        return True
+    pay = plans.get_payment(pid)
+    if not pay or pay[4] != "new":
+        awaiting.pop(uid, None)
+        return False
+    plans.set_payment(pid, "wait")
+    awaiting.pop(uid, None)
+    sender = await event.get_sender()
+    name = html.escape(" ".join(filter(None, [getattr(sender, "first_name", ""), getattr(sender, "last_name", "")])) or "—")
+    uname = f"@{sender.username}" if getattr(sender, "username", None) else "—"
+    P = plans.PLANS[pay[2]]
+    caption = (
+        f"💳 To'lov #{pid}\nFoydalanuvchi: {name} ({uname})\nID: <code>{uid}</code>\n"
+        f"Tarif: <b>{P['name']}</b>\nSumma: <b>{som(pay[3])} so'm</b>"
+    )
+    kb = [[Button.inline("✅ Tasdiqlash", f"pok:{pid}".encode()), Button.inline("❌ Rad etish", f"pno:{pid}".encode())]]
+    sent = 0
+    for aid in ADMINS:
+        try:
+            await client.send_file(aid, msg.media, caption=caption, buttons=kb, parse_mode="html")
+            sent += 1
+        except Exception as e:
+            log.warning("Adminga yuborib bo'lmadi (%s): %s", aid, e)
+    if sent:
+        await event.reply(f"✅ Chek qabul qilindi (#{pid}). Admin tekshirib, tez orada tarifni yoqadi.")
+    else:
+        plans.set_payment(pid, "new")
+        awaiting[uid] = pid
+        await event.reply("❌ Chekni adminga yetkazib bo'lmadi. Birozdan keyin qayta yuboring.")
+    return True
+
+
+async def on_pay_decide(event):
+    aid = event.sender_id
+    if aid not in ADMINS:
+        await event.answer("Faqat admin uchun.", alert=True)
+        return
+    action, pid_s = event.data.decode().split(":", 1)
+    pid = int(pid_s)
+    pay = plans.get_payment(pid)
+    if not pay or pay[4] not in ("wait", "new"):
+        await event.answer("Bu to'lov allaqachon hal qilingan.", alert=True)
+        return
+    uid, plan = pay[1], pay[2]
+    P = plans.PLANS[plan]
+    if action == "pok":
+        plans.set_payment(pid, "ok", aid)
+        until = plans.grant(uid, plan)
+        await event.answer("Tasdiqlandi")
+        try:
+            await event.edit(f"✅ Tasdiqlandi: #{pid} — {P['name']} ({som(pay[3])} so'm)", buttons=NO_BUTTONS)
+        except Exception:
+            pass
+        try:
+            await client.send_message(
+                uid,
+                f"🎉 To'lov tasdiqlandi! <b>{P['name']}</b> tarifi {plans.fmt_until(until)} gacha yoqildi.\n"
+                f"Endi kuniga {P['daily']} ta kino yubora olasiz. Kinoni yuboring 🎬",
+                parse_mode="html",
+            )
+        except Exception:
+            pass
+    else:
+        plans.set_payment(pid, "no", aid)
+        await event.answer("Rad etildi")
+        try:
+            await event.edit(f"❌ Rad etildi: #{pid}", buttons=NO_BUTTONS)
+        except Exception:
+            pass
+        try:
+            await client.send_message(
+                uid,
+                f"❌ To'lov #{pid} tasdiqlanmadi. Agar to'lov qilgan bo'lsangiz, /tarif orqali qayta urinib, "
+                "to'g'ri chek yuboring.",
+            )
+        except Exception:
+            pass
+
+
+async def on_grant(event):
+    if event.sender_id not in ADMINS:
+        return
+    parts = (event.raw_text or "").split()
+    if len(parts) < 3 or not parts[1].isdigit() or parts[2] not in ("start", "pro", "free"):
+        await event.reply("Ishlatilishi: /grant ID start|pro|free [kun]")
+        return
+    uid, plan = int(parts[1]), parts[2]
+    days = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else plans.PLAN_DAYS
+    if plan == "free":
+        plans.grant(uid, "free", 0)
+        await event.reply(f"✅ {uid}: Bepul tarifga o'tkazildi.")
+        return
+    until = plans.grant(uid, plan, days)
+    await event.reply(f"✅ {uid}: {plans.PLANS[plan]['name']} — {plans.fmt_until(until)} gacha.")
+    try:
+        await client.send_message(uid, f"🎁 Sizga <b>{plans.PLANS[plan]['name']}</b> tarifi berildi "
+                                       f"({plans.fmt_until(until)} gacha).", parse_mode="html")
+    except Exception:
+        pass
+
+
+async def on_stats(event):
+    if event.sender_id not in ADMINS:
+        return
+    s = plans.stats()
+    await event.reply(
+        f"📊 Foydalanuvchi (tarif olganlar): {s['users']}\nFaol pullik: {s['paid']}\n"
+        f"Bugun kinolar: {s['films_today']}\nJami tushum: {som(s['income'])} so'm"
+    )
 
 
 # ------------------------------------------------------------- bekor qilish
@@ -559,7 +791,7 @@ async def process(job: Job):
 async def worker():
     global busy
     while True:
-        job: Job = await queue.get()
+        _, _, job = await queue.get()
         busy = True
         try:
             if job.cancel.is_set():          # navbatda turganida bekor qilingan
@@ -595,19 +827,28 @@ async def main():
     WORK_DIR.mkdir(parents=True, exist_ok=True)
     Path(SESSION).parent.mkdir(parents=True, exist_ok=True)
 
-    queue = asyncio.Queue()
+    plans.init(DB_FILE)
+    queue = asyncio.PriorityQueue()
     client = TelegramClient(SESSION, int(os.environ["API_ID"]), os.environ["API_HASH"])
     client.parse_mode = "html"
 
     private = lambda e: e.is_private  # noqa: E731
     client.add_event_handler(on_start, events.NewMessage(incoming=True, pattern=r"^/(start|help)", func=private))
     client.add_event_handler(on_length, events.NewMessage(incoming=True, pattern=r"^/uzunlik(?:@\w+)?(?:\s+(\d+))?\s*$", func=private))
+    client.add_event_handler(on_tarif, events.NewMessage(incoming=True, pattern=r"^/(tarif|tariflar|premium)", func=private))
+    client.add_event_handler(on_profile, events.NewMessage(incoming=True, pattern=r"^/(profil|balans|me)", func=private))
+    client.add_event_handler(on_grant, events.NewMessage(incoming=True, pattern=r"^/grant", func=private))
+    client.add_event_handler(on_stats, events.NewMessage(incoming=True, pattern=r"^/stats", func=private))
     client.add_event_handler(on_media, events.NewMessage(
         incoming=True, func=lambda e: e.is_private and e.message.file is not None))
     client.add_event_handler(on_text, events.NewMessage(
         incoming=True, func=lambda e: e.is_private and e.message.file is None
         and not (e.raw_text or "").startswith("/")))
 
+    client.add_event_handler(on_tarif_btn, events.CallbackQuery(data=b"tarif"))
+    client.add_event_handler(on_buy, events.CallbackQuery(pattern=rb"^buy:(start|pro)$"))
+    client.add_event_handler(on_pay_cancel, events.CallbackQuery(pattern=rb"^payx:\d+$"))
+    client.add_event_handler(on_pay_decide, events.CallbackQuery(pattern=rb"^p(ok|no):\d+$"))
     client.add_event_handler(on_skip, events.CallbackQuery(data=b"skip"))
     client.add_event_handler(on_color, events.CallbackQuery(pattern=rb"^col:(yellow|red|white|green|blue)$"))
     client.add_event_handler(on_count, events.CallbackQuery(pattern=rb"^n[1-5]$"))
