@@ -180,6 +180,7 @@ class Status:
         except MessageNotModifiedError:
             pass
         except FloodWaitError as e:
+            log.warning("Telegram holat xabarini yangilashni %s s kutishni so'radi", e.seconds)
             self.last = now + e.seconds
         except Exception as e:  # holat xabari muhim emas — ish to'xtamasin
             log.warning("Holatni yangilab bo'lmadi: %s", e)
