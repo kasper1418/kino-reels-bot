@@ -1,0 +1,14 @@
+# Docker'siz ishlatish uchun (systemd). README dagi 2-usulga qarang.
+[Unit]
+Description=Kino Reels Telegram bot
+After=network-online.target
+
+[Service]
+WorkingDirectory=/opt/kino-reels-bot
+ExecStart=/opt/kino-reels-bot/venv/bin/python bot.py
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

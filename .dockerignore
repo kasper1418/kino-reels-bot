@@ -1,0 +1,5 @@
+.env
+data/
+natija/
+__pycache__/
+*.pyc
