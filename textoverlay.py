@@ -157,7 +157,7 @@ def make_overlay(title: str | None, code: str | None, top_h: int, out: Path,
         tw = d.textlength(pill_text, font=pf)
         pw, ph = int(tw + 56), int(size + 30)
         if top_h >= 300:                    # kadr ostidagi qora joyda, kadrga yaqin
-            py = H - top_h + 56
+            py = H - top_h + 37
         else:                               # tik video: pastda, Instagram yozuvlaridan yuqoriroqda
             py = H - 420
         px = (W - pw) // 2
