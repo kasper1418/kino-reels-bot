@@ -1,6 +1,6 @@
 # 🎬 Kino Reels Bot
 
-Telegram'ga kino tashlaysiz. Bot uning eng qiziq joylarini topib, **10 ta vertikal (1080×1920) reels** qilib qaytaradi. Ularni Instagram yoki TikTok'ga to'g'ridan-to'g'ri joylash mumkin.
+Telegram'ga kino tashlaysiz. Bot uning eng qiziq joylarini topib, **1 dan 5 tagacha vertikal (1080×1920) reels** qilib qaytaradi. Ularni Instagram yoki TikTok'ga to'g'ridan-to'g'ri joylash mumkin.
 
 ## Bot nima qiladi
 
@@ -10,7 +10,7 @@ Telegram'ga kino tashlaysiz. Bot uning eng qiziq joylarini topib, **10 ta vertik
 - Kesish sahna boshidan boshlanadi, boshi va oxiri silliq (fade) chiqadi.
 - Kinodagi qora chiziqlar avtomatik olib tashlanadi. O'rtada kino, tepasi va pasti qora fon.
 - Ovoz telefon uchun balandlashtiriladi. Kinoda o'zbekcha audio yo'lak bo'lsa, o'sha olinadi.
-- Kino yuborilgach, bot **kino kodi** va **matn** so'raydi (ikkalasi ixtiyoriy, tugma bilan o'tkazib yuborish mumkin). Yozilsa, matn videoning tepasida, kod esa pastida chiroyli shriftda chiqadi. So'zni rangli qilish: `*so'z*` — sariq, `[so'z]` — qizil. Misol: `Eng *kuchli* jang [ayovsiz] sahnasi`.
+- Kino yuborilgach, bot **kino kodi**, **matn** va **variantlar sonini** (1–5) so'raydi. Kod va matn ixtiyoriy, tugma bilan o'tkazib yuborish mumkin. Yozilsa, matn videoning tepasida, kod esa pastida chiroyli shriftda chiqadi. So'zni rangli qilish: `*so'z*` — sariq, `[so'z]` — qizil. Misol: `Eng *kuchli* jang [ayovsiz] sahnasi`.
 - Har bir reels ostida kinoning qaysi qismi ekanligi yoziladi (masalan, `1:12:40–1:13:20`).
 
 ## 1. Kerakli kalitlar
@@ -63,7 +63,7 @@ journalctl -u kino-reels-bot -f             # loglarni ko'rish
 
 | Sozlama | Ma'nosi | Standart |
 |---|---|---|
-| `CLIP_COUNT` | Nechta reels | 10 |
+| `CLIP_COUNT` | Odatiy variant soni (foydalanuvchi o'zi 1–5 tanlaydi) | 5 |
 | `CLIP_LEN` | Har biri necha soniya | 40 |
 | `KADR_ZOOM` | `1.3` qilsangiz, kadr kattalashadi (yon tomonlari biroz kesiladi) | 1.0 |
 | `ALLOWED_USERS` | Ruxsat berilgan ID lar, vergul bilan | hamma |

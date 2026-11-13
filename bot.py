@@ -39,7 +39,8 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-CLIP_COUNT = max(1, min(_env_int("CLIP_COUNT", 10), 20))
+CLIP_COUNT = max(1, min(_env_int("CLIP_COUNT", 5), 5))   # standart variant soni (1–5)
+MAX_CLIPS = 5
 DEFAULT_LEN = max(15, min(_env_int("CLIP_LEN", 40), 90))
 ZOOM = float(os.getenv("KADR_ZOOM", "1.3") or 1.3)
 WORK_DIR = Path(os.getenv("WORK_DIR", "data/work"))
@@ -90,7 +91,7 @@ def add_usage(uid: int, delta: int) -> None:
 
 
 HELP = (
-    "🎬 Salom! Menga kino yuboring — eng qiziq joylaridan {count} ta "
+    "🎬 Salom! Menga kino yuboring — eng qiziq joylaridan {count} tagacha "
     "vertikal (9:16) reels tayyorlab beraman.\n\n"
     "• Kinoni video yoki fayl qilib yuboring (MP4, MKV, AVI…), 2 GB gacha.\n"
     "• Kinoni yuborgach, bot <b>kino kodi</b> va <b>matn</b> so'raydi (ixtiyoriy). Yozsangiz, "
@@ -118,6 +119,7 @@ class Job:
     length: int
     title: str | None
     code: str | None = None
+    count: int = 5
 
 
 class Status:
@@ -169,7 +171,7 @@ async def on_start(event):
         await event.reply(f"Kechirasiz, bu bot shaxsiy.\nSizning ID: <code>{uid}</code>", parse_mode="html")
         return
     await event.reply(
-        HELP.format(count=CLIP_COUNT, length=user_len.get(uid, DEFAULT_LEN), uid=uid, daily=DAILY_LIMIT),
+        HELP.format(count=MAX_CLIPS, length=user_len.get(uid, DEFAULT_LEN), uid=uid, daily=DAILY_LIMIT),
         parse_mode="html",
     )
 
@@ -196,6 +198,12 @@ async def on_text(event):
         return
     if uid in pending:
         text = (event.raw_text or "").strip()
+        if pending[uid]["step"] == "count":
+            if text.isdigit() and 1 <= int(text) <= MAX_CLIPS:
+                await set_count(uid, int(text))
+            else:
+                await event.reply(f"1 dan {MAX_CLIPS} gacha raqam yozing yoki tugmani bosing.")
+            return
         await advance(uid, text[:120] if text else None)
         return
     await event.reply("Menga kino faylini yuboring 🎬  Yordam: /start")
@@ -272,7 +280,7 @@ async def enqueue(uid: int):
         await status.edit("⏳ Hozir navbat to'la. Bir necha daqiqadan keyin kinoni qayta yuboring.", buttons=None)
         return
     await queue.put(Job(p["chat_id"], uid, p["msg"], status, user_len.get(uid, DEFAULT_LEN),
-                        p["title"], p["code"]))
+                        p["title"], p["code"], p.get("count", CLIP_COUNT)))
     add_usage(uid, 1)
     pos = queue.qsize() + (1 if busy else 0)
     if pos > 1:
@@ -284,8 +292,18 @@ async def enqueue(uid: int):
     await status.edit(text, buttons=None)
 
 
+ASK_COUNT = (
+    "3️⃣ Nechta <b>variant</b> (reels) kerak?\n"
+    "Bot kinoning eng qiziq joylaridan shuncha reels tayyorlaydi. 1 dan 5 gacha tanlang."
+)
+
+
+def count_buttons():
+    return [[Button.inline(str(i), f"n{i}".encode()) for i in range(1, MAX_CLIPS + 1)]]
+
+
 async def advance(uid: int, value: str | None):
-    """Navbatdagi bosqichga o'tadi: kod → matn → navbat."""
+    """Navbatdagi bosqichga o'tadi: kod → matn → variantlar soni → navbat."""
     p = pending.get(uid)
     if not p:
         return
@@ -293,14 +311,33 @@ async def advance(uid: int, value: str | None):
         p["code"] = value
         p["step"] = "title"
         await p["status"].edit(ASK_TITLE, buttons=[Button.inline("⏭ O'tkazib yuborish", b"skip")], parse_mode="html")
-    else:
+    elif p["step"] == "title":
         p["title"] = value
-        await enqueue(uid)
+        p["step"] = "count"
+        await p["status"].edit(ASK_COUNT, buttons=count_buttons(), parse_mode="html")
+
+
+async def set_count(uid: int, n: int):
+    p = pending.get(uid)
+    if not p or p["step"] != "count":
+        return
+    p["count"] = n
+    await enqueue(uid)
+
+
+async def on_count(event):
+    uid = event.sender_id
+    p = pending.get(uid)
+    if not allowed(uid) or not p or p["step"] != "count":
+        await event.answer("Bu so'rov eskirgan. Kinoni qayta yuboring.", alert=True)
+        return
+    await event.answer()
+    await set_count(uid, int(event.data[1:]))
 
 
 async def on_skip(event):
     uid = event.sender_id
-    if not allowed(uid) or uid not in pending:
+    if not allowed(uid) or uid not in pending or pending[uid]["step"] == "count":
         await event.answer("Bu so'rov eskirgan. Kinoni qayta yuboring.", alert=True)
         return
     await event.answer()
@@ -341,7 +378,7 @@ async def process(job: Job):
 
         t0 = time.monotonic()
         res = await asyncio.to_thread(
-            analyze.find_highlights, str(src), CLIP_COUNT, job.length, an_progress,
+            analyze.find_highlights, str(src), job.count, job.length, an_progress,
         )
         log.info("Tahlil %.0f s, %d ta joy topildi", time.monotonic() - t0, len(res.clips))
         if not res.clips:
@@ -420,6 +457,7 @@ async def main():
         and not (e.raw_text or "").startswith("/")))
 
     client.add_event_handler(on_skip, events.CallbackQuery(data=b"skip"))
+    client.add_event_handler(on_count, events.CallbackQuery(pattern=rb"^n[1-5]$"))
 
     await client.start(bot_token=os.environ["BOT_TOKEN"])
     me = await client.get_me()
