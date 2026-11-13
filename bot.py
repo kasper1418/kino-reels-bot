@@ -21,7 +21,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 from telethon import Button, TelegramClient, events
 from telethon.errors import FloodWaitError, MessageNotModifiedError
-from telethon.tl.types import DocumentAttributeVideo, ReplyInlineMarkup
+from telethon.tl.functions.bots import SetBotCommandsRequest
+from telethon.tl.types import (BotCommand, BotCommandScopeDefault, DocumentAttributeVideo,
+                               ReplyInlineMarkup)
 
 import admin
 import analyze
@@ -216,7 +218,7 @@ async def on_start(event):
     await event.reply(
         HELP.format(count=max_clips(uid), length=user_len.get(uid, DEFAULT_LEN), uid=uid,
                     daily=daily_of(uid), plan=plans.info(uid)["name"]),
-        parse_mode="html",
+        parse_mode="html", buttons=menu_kb(uid),
     )
     if uid in ADMINS:
         await event.reply("⚙️ Siz adminsiz: boshqaruv paneli — /panel", parse_mode="html")
@@ -243,6 +245,8 @@ async def on_text(event):
     if not allowed(uid):
         return
     await seen(event)
+    if await on_menu(event):
+        return
     if await admin.handle_text(event):
         return
     if uid in awaiting and uid not in pending:
@@ -261,7 +265,7 @@ async def on_text(event):
             return
         await advance(uid, text[:120] if text else None)
         return
-    await event.reply("Menga kino faylini yuboring 🎬  Yordam: /start")
+    await event.reply("Menga kino faylini yuboring 🎬  Yordam: /start", buttons=menu_kb(uid))
 
 
 async def on_media(event):
@@ -428,6 +432,77 @@ async def on_count(event):
         return
     await event.answer()
     await set_count(uid, n)
+
+
+# ------------------------------------------------------------------ pastki menyu
+
+M_REELS, M_TARIF, M_PROFIL = "🎬 Reels yasash", "💎 Tariflar", "👤 Profil"
+M_LEN, M_HELP, M_PANEL = "⏱ Uzunlik", "ℹ️ Yordam", "⚙️ Panel"
+MENU_TEXTS = {M_REELS, M_TARIF, M_PROFIL, M_LEN, M_HELP, M_PANEL}
+
+
+def menu_kb(uid: int):
+    rows = [
+        [Button.text(M_REELS, resize=True), Button.text(M_TARIF, resize=True)],
+        [Button.text(M_PROFIL, resize=True), Button.text(M_LEN, resize=True)],
+        [Button.text(M_HELP, resize=True)] + ([Button.text(M_PANEL, resize=True)] if uid in ADMINS else []),
+    ]
+    return rows
+
+
+LEN_CHOICES = (20, 30, 40, 60, 90)
+
+
+async def on_menu(event) -> bool:
+    """Pastki menyu tugmalarini qayta ishlaydi. True — xabar menyu tugmasi edi."""
+    text = (event.raw_text or "").strip()
+    if text not in MENU_TEXTS:
+        return False
+    uid = event.sender_id
+    admin.state.pop(uid, None)           # admin kiritish bosqichi menyu bosilganda tugaydi
+    if text == M_REELS:
+        await event.reply("🎬 Kinoni shu yerga video yoki fayl (MP4, MKV, AVI…) qilib yuboring, 2 GB gacha.\n"
+                          "Keyin kino kodi, matn va variantlar sonini so'rayman.", buttons=menu_kb(uid))
+    elif text == M_TARIF:
+        await on_tarif(event)
+    elif text == M_PROFIL:
+        await on_profile(event)
+    elif text == M_LEN:
+        cur = user_len.get(uid, DEFAULT_LEN)
+        await event.reply(
+            f"⏱ Har bir reels necha soniya bo'lsin? Hozir: <b>{cur} soniya</b>.",
+            buttons=[[Button.inline(("✅ " if n == cur else "") + f"{n} s", f"len:{n}".encode()) for n in LEN_CHOICES]],
+            parse_mode="html")
+    elif text == M_HELP:
+        await on_start(event)
+    elif text == M_PANEL and uid in ADMINS:
+        await admin.on_panel(event)
+    return True
+
+
+async def on_len_btn(event):
+    uid = event.sender_id
+    n = int(event.data.decode().split(":", 1)[1])
+    if not allowed(uid) or not 15 <= n <= 90:
+        await event.answer()
+        return
+    user_len[uid] = n
+    await event.answer(f"{n} soniya")
+    try:
+        await event.edit(
+            f"⏱ Har bir reels necha soniya bo'lsin? Hozir: <b>{n} soniya</b>.",
+            buttons=[[Button.inline(("✅ " if k == n else "") + f"{k} s", f"len:{k}".encode()) for k in LEN_CHOICES]],
+            parse_mode="html")
+    except MessageNotModifiedError:
+        pass
+
+
+COMMANDS = [
+    BotCommand("start", "Botni ishga tushirish"),
+    BotCommand("tarif", "Tariflar va to'lov"),
+    BotCommand("profil", "Mening tarifim va limitim"),
+    BotCommand("uzunlik", "Reels uzunligini o'zgartirish"),
+]
 
 
 # ------------------------------------------------------------------ tariflar va to'lov
@@ -876,6 +951,7 @@ async def main():
     client.add_event_handler(on_buy, events.CallbackQuery(pattern=rb"^buy:(start|pro)$"))
     client.add_event_handler(on_pay_cancel, events.CallbackQuery(pattern=rb"^payx:\d+$"))
     client.add_event_handler(on_pay_decide, events.CallbackQuery(pattern=rb"^p(ok|no):\d+$"))
+    client.add_event_handler(on_len_btn, events.CallbackQuery(pattern=rb"^len:\d+$"))
     client.add_event_handler(on_skip, events.CallbackQuery(data=b"skip"))
     client.add_event_handler(on_color, events.CallbackQuery(pattern=rb"^col:(yellow|red|white|green|blue)$"))
     client.add_event_handler(on_count, events.CallbackQuery(pattern=rb"^n[1-5]$"))
@@ -884,6 +960,10 @@ async def main():
     client.add_event_handler(on_cancel_no, events.CallbackQuery(pattern=rb"^cn:\d+$"))
 
     await client.start(bot_token=os.environ["BOT_TOKEN"])
+    try:
+        await client(SetBotCommandsRequest(scope=BotCommandScopeDefault(), lang_code="", commands=COMMANDS))
+    except Exception as e:
+        log.warning("Buyruqlar menyusini o'rnatib bo'lmadi: %s", e)
     me = await client.get_me()
     log.info("Bot ishga tushdi: @%s  (reels: %d ta × %d s)", me.username, CLIP_COUNT, DEFAULT_LEN)
     if not ALLOWED:
