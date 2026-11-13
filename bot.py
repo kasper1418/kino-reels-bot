@@ -323,7 +323,7 @@ async def on_text(event):
         text = (event.raw_text or "").strip()
         if pending[uid]["step"] == "count":
             if text.isdigit() and 1 <= int(text) <= max_clips(uid):
-                await set_count(uid, int(text))
+                await set_count(uid, int(text), from_text=True)
             elif text.isdigit() and max_clips(uid) < int(text) <= MAX_CLIPS:
                 await offer_upgrade(event, int(text))
             else:
@@ -332,7 +332,7 @@ async def on_text(event):
         if pending[uid]["step"] == "color":
             await event.reply("Rangni yuqoridagi tugmalardan tanlang 🎨")
             return
-        await advance(uid, text[:120] if text else None)
+        await advance(uid, text[:120] if text else None, from_text=True)
         return
     await event.reply("Menga kino faylini yuboring 🎬  Yordam: /start", buttons=menu_kb(uid))
 
@@ -533,34 +533,69 @@ async def offer_upgrade(event, n: int):
         buttons=[[Button.inline("💎 Tariflarni ko'rish", b"tarif")]], parse_mode="html")
 
 
-async def advance(uid: int, value: str | None):
-    """Navbatdagi bosqichga o'tadi: kod → matn → variantlar soni → navbat."""
+async def show_step(p: dict, text: str, buttons, from_text: bool, summary: str | None = None):
+    """Keyingi savolni ko'rsatadi.
+
+    Foydalanuvchi matn yozgan bo'lsa, savol yangi xabar bo'lib uning javobi ostida chiqadi
+    (eski savol tepada qolib ketmasin), eskisi esa qisqa natijaga aylanadi. Tugma bosilgan
+    bo'lsa, xabar joyida yangilanadi.
+    """
+    old = p["status"]
+    if from_text:
+        new = await client.send_message(p["chat_id"], text, buttons=buttons, parse_mode="html")
+        p["status"] = new
+        if summary:
+            try:
+                await old.edit(summary, buttons=NO_BUTTONS, parse_mode="html")
+            except Exception:
+                pass
+    else:
+        await old.edit(text, buttons=buttons, parse_mode="html")
+
+
+SKIP_BTN = [Button.inline("⏭ O'tkazib yuborish", b"skip")]
+
+
+async def advance(uid: int, value: str | None, from_text: bool = False):
+    """Navbatdagi bosqichga o'tadi: kod → rang → matn → variantlar soni → navbat."""
     p = pending.get(uid)
     if not p:
         return
     if p["step"] == "code":
         p["code"] = value
+        summary = (f"🔢 Kino kodi: <b>{html.escape(value)}</b>" if value else "🔢 Kino kodi: o'tkazib yuborildi")
         if value:
             p["step"] = "color"
-            await p["status"].edit(ASK_COLOR, buttons=color_buttons(), parse_mode="html")
+            await show_step(p, ASK_COLOR, color_buttons(), from_text, summary)
         else:
             p["step"] = "title"
-            await p["status"].edit(ASK_TITLE, buttons=[Button.inline("⏭ O'tkazib yuborish", b"skip")], parse_mode="html")
+            await show_step(p, ASK_TITLE, SKIP_BTN, from_text, summary)
     elif p["step"] == "color":
         p["code_color"] = value or "yellow"
         p["step"] = "title"
-        await p["status"].edit(ASK_TITLE, buttons=[Button.inline("⏭ O'tkazib yuborish", b"skip")], parse_mode="html")
+        await show_step(p, ASK_TITLE, SKIP_BTN, from_text)
     elif p["step"] == "title":
         p["title"] = value
         p["step"] = "count"
-        await p["status"].edit(ask_count_text(uid), buttons=count_buttons(uid), parse_mode="html")
+        summary = (f"✍️ Matn: {html.escape(value)}" if value else "✍️ Matn: o'tkazib yuborildi")
+        await show_step(p, ask_count_text(uid), count_buttons(uid), from_text, summary)
 
 
-async def set_count(uid: int, n: int):
+async def set_count(uid: int, n: int, from_text: bool = False):
     p = pending.get(uid)
     if not p or p["step"] != "count":
         return
     p["count"] = n
+    if from_text:      # raqam yozilgan: holat xabari javob ostida yangi xabar bo'lib chiqadi
+        old = p["status"]
+        try:
+            p["status"] = await client.send_message(p["chat_id"], "⏳ Qabul qilinmoqda…")
+            try:
+                await old.edit(f"🎯 Variantlar soni: <b>{n}</b>", buttons=NO_BUTTONS, parse_mode="html")
+            except Exception:
+                pass
+        except Exception:
+            pass
     await enqueue(uid)
 
 
