@@ -122,6 +122,7 @@ class Job:
     title: str | None
     code: str | None = None
     count: int = 5
+    code_color: str = "yellow"
     cancel: threading.Event = field(default_factory=threading.Event)
     confirming: bool = False      # "Rostan bekor qilasizmi?" so'ralmoqda
     refunded: bool = False        # limit qaytarilganmi
@@ -236,6 +237,9 @@ async def on_text(event):
             else:
                 await event.reply(f"1 dan {MAX_CLIPS} gacha raqam yozing yoki tugmani bosing.")
             return
+        if pending[uid]["step"] == "color":
+            await event.reply("Rangni yuqoridagi tugmalardan tanlang 🎨")
+            return
         await advance(uid, text[:120] if text else None)
         return
     await event.reply("Menga kino faylini yuboring 🎬  Yordam: /start")
@@ -277,7 +281,7 @@ async def on_media(event):
         parse_mode="html",
     )
     pending[uid] = {"step": "code", "msg": msg, "status": status, "chat_id": event.chat_id,
-                    "code": None, "title": None}
+                    "code": None, "title": None, "code_color": "yellow"}
     if old:
         try:
             await old["status"].edit("↩️ Bekor qilindi: yangi kino yubordingiz.", buttons=None)
@@ -313,6 +317,7 @@ async def enqueue(uid: int):
         return
     job = Job(p["chat_id"], uid, p["msg"], status, user_len.get(uid, DEFAULT_LEN),
               p["title"], p["code"], p.get("count", CLIP_COUNT))
+    job.code_color = p.get("code_color", "yellow")
     jobs[(p["chat_id"], status.id)] = job
     await queue.put(job)
     add_usage(uid, 1)
@@ -325,6 +330,20 @@ async def enqueue(uid: int):
         text = "⏳ Qabul qilindi."
     job.last_text = text
     await status.edit(text, buttons=cancel_button(job))
+
+
+ASK_COLOR = (
+    "🎨 Kino kodi qaysi <b>rangda</b> chiqsin?\n"
+    "Videoning pastidagi kichik nishon rangini tanlang."
+)
+
+
+def color_buttons():
+    return [
+        [Button.inline("🟡 Sariq", b"col:yellow"), Button.inline("🔴 Qizil", b"col:red"),
+         Button.inline("⚪ Oq", b"col:white")],
+        [Button.inline("🟢 Yashil", b"col:green"), Button.inline("🔵 Ko'k", b"col:blue")],
+    ]
 
 
 ASK_COUNT = (
@@ -344,6 +363,14 @@ async def advance(uid: int, value: str | None):
         return
     if p["step"] == "code":
         p["code"] = value
+        if value:
+            p["step"] = "color"
+            await p["status"].edit(ASK_COLOR, buttons=color_buttons(), parse_mode="html")
+        else:
+            p["step"] = "title"
+            await p["status"].edit(ASK_TITLE, buttons=[Button.inline("⏭ O'tkazib yuborish", b"skip")], parse_mode="html")
+    elif p["step"] == "color":
+        p["code_color"] = value or "yellow"
         p["step"] = "title"
         await p["status"].edit(ASK_TITLE, buttons=[Button.inline("⏭ O'tkazib yuborish", b"skip")], parse_mode="html")
     elif p["step"] == "title":
@@ -358,6 +385,16 @@ async def set_count(uid: int, n: int):
         return
     p["count"] = n
     await enqueue(uid)
+
+
+async def on_color(event):
+    uid = event.sender_id
+    p = pending.get(uid)
+    if not allowed(uid) or not p or p["step"] != "color":
+        await event.answer("Bu so'rov eskirgan. Kinoni qayta yuboring.", alert=True)
+        return
+    await event.answer()
+    await advance(uid, event.data.decode().split(":", 1)[1])
 
 
 async def on_count(event):
@@ -491,7 +528,7 @@ async def process(job: Job):
         if job.title or job.code:
             top_h = render.top_bar_height(res.info, ZOOM)
             overlay = await asyncio.to_thread(
-                textoverlay.make_overlay, job.title, job.code, top_h, jobdir / "overlay.png")
+                textoverlay.make_overlay, job.title, job.code, top_h, jobdir / "overlay.png", job.code_color)
 
         total = len(res.clips)
         for i, clip in enumerate(res.clips, 1):
@@ -572,6 +609,7 @@ async def main():
         and not (e.raw_text or "").startswith("/")))
 
     client.add_event_handler(on_skip, events.CallbackQuery(data=b"skip"))
+    client.add_event_handler(on_color, events.CallbackQuery(pattern=rb"^col:(yellow|red|white|green|blue)$"))
     client.add_event_handler(on_count, events.CallbackQuery(pattern=rb"^n[1-5]$"))
     client.add_event_handler(on_cancel_ask, events.CallbackQuery(pattern=rb"^c:\d+$"))
     client.add_event_handler(on_cancel_yes, events.CallbackQuery(pattern=rb"^cy:\d+$"))

@@ -17,6 +17,15 @@ W, H = 1080, 1920
 WHITE = (255, 255, 255, 255)
 ACCENT = (255, 214, 10, 255)       # sariq: *so'z*, kod belgisi
 RED = (255, 69, 58, 255)           # qizil: [so'z]
+
+# Kino kodi nishoni ranglari: nomi -> (fon, matn rangi)
+CODE_COLORS = {
+    "yellow": ((255, 214, 10, 255), (0, 0, 0, 255)),
+    "red": ((255, 69, 58, 255), (255, 255, 255, 255)),
+    "white": ((255, 255, 255, 255), (0, 0, 0, 255)),
+    "green": ((48, 209, 88, 255), (0, 0, 0, 255)),
+    "blue": ((10, 132, 255, 255), (255, 255, 255, 255)),
+}
 BLACK = (0, 0, 0, 255)
 SIDE_MARGIN = 60
 
@@ -81,7 +90,8 @@ def _wrap(draw, words, font, max_w):
     return lines, space
 
 
-def make_overlay(title: str | None, code: str | None, top_h: int, out: Path) -> Path | None:
+def make_overlay(title: str | None, code: str | None, top_h: int, out: Path,
+                 code_color: str = "yellow") -> Path | None:
     """Matn — tepadagi qora joyda, kino kodi — pastdagi qora joyda (kichik, qalin belgi).
 
     top_h: kadr ustidagi (va ostidagi) qora joy balandligi.
@@ -107,7 +117,7 @@ def make_overlay(title: str | None, code: str | None, top_h: int, out: Path) -> 
         region_h = max(120, y1 - y0)
 
         chosen = None
-        for size in range(88, 35, -4):
+        for size in range(72, 35, -4):
             font = ImageFont.truetype(font_path, size)
             lines, space = _wrap(d, words, font, max_w)
             if any(sum(w[2] for w in ln) + space * (len(ln) - 1) > max_w for ln in lines):
@@ -148,8 +158,9 @@ def make_overlay(title: str | None, code: str | None, top_h: int, out: Path) -> 
         else:                               # tik video: pastda, Instagram yozuvlaridan yuqoriroqda
             py = H - 420
         px = (W - pw) // 2
-        d.rounded_rectangle([px, py, px + pw, py + ph], radius=ph // 2, fill=ACCENT)
-        d.text((W / 2, py + ph / 2 + 1), pill_text, font=pf, fill=BLACK, anchor="mm")
+        bg, fg = CODE_COLORS.get(code_color, CODE_COLORS["yellow"])
+        d.rounded_rectangle([px, py, px + pw, py + ph], radius=ph // 2, fill=bg)
+        d.text((W / 2, py + ph / 2 + 1), pill_text, font=pf, fill=fg, anchor="mm")
 
     out.parent.mkdir(parents=True, exist_ok=True)
     img.save(out)
