@@ -279,10 +279,7 @@ async def process(job: Job):
             thumb = await asyncio.to_thread(
                 render.make_thumb, out, clip.duration * 0.3, jobdir / f"thumb_{i:02d}.jpg",
             )
-            caption = (
-                f"🎬 {i}-variant · kinoning {analyze.fmt_time(clip.start)}–"
-                f"{analyze.fmt_time(clip.end)} qismi · {round(clip.duration)} s"
-            )
+            caption = ""  # reelsda ortiqcha yozuv yo'q
             await send_reel(job, out, thumb, caption, clip.duration)
             out.unlink(missing_ok=True)
 

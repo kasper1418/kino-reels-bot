@@ -141,27 +141,54 @@ def probe(path: str) -> MediaInfo:
 
 
 def detect_crop(info: MediaInfo) -> tuple[int, int, int, int] | None:
-    """Kino ichidagi qora chiziqlarni (letterbox) aniqlaydi."""
-    found = []
-    for frac in (0.15, 0.35, 0.5, 0.65, 0.85):
-        t = info.duration * frac
-        r = subprocess.run([
-            "ffmpeg", "-hide_banner", "-ss", f"{t:.2f}", "-i", info.path,
-            "-map", f"0:{info.video_index}", "-t", "3",
-            "-vf", "cropdetect=limit=24:round=2:reset=0", "-an", "-sn", "-f", "null", "-",
-        ], capture_output=True, text=True)
-        m = re.findall(r"crop=(\d+):(\d+):(\d+):(\d+)", r.stderr)
-        if m:
-            found.append(tuple(int(x) for x in m[-1]))
-    if not found:
+    """Kino ichidagi qora chiziqlarni (letterbox/pillarbox) aniqlaydi.
+
+    Videoning butun uzunligidan ~60 ta kadr olinadi (faqat kalit kadrlar, tez).
+    Har bir piksel uchun kadrlar bo'yicha pastroq foiz (30%) olinadi: chiziqdagi
+    subtitr yoki logotip kadrlarning faqat bir qismida chiqadi, shuning uchun
+    u "qora" hisoblanadi va kesib tashlanadi. Qorong'i sahnalar natijani buzmaydi.
+    """
+    W, H = info.width, info.height
+    sw = 640
+    sh = max(2, round(sw * H / W) // 2 * 2)
+    n_frames = 60
+    r = subprocess.run([
+        "ffmpeg", "-v", "error", "-skip_frame", "nokey", "-i", info.path,
+        "-map", f"0:{info.video_index}", "-an", "-sn",
+        "-vf", f"fps={n_frames / max(info.duration, 1):.6f},scale={sw}:{sh},format=gray",
+        "-f", "rawvideo", "-",
+    ], capture_output=True)
+    fsize = sw * sh
+    cnt = len(r.stdout) // fsize
+    if cnt < 8:
         return None
-    # Eng katta maydonni olamiz — qorong'i sahna tufayli ortiqcha kesib yubormaslik uchun
-    cw, ch, cx, cy = max(found, key=lambda c: c[0] * c[1])
-    if cw * ch >= 0.96 * info.width * info.height:
+    frames = np.frombuffer(r.stdout[:cnt * fsize], dtype=np.uint8).reshape(cnt, sh, sw)
+    img = np.percentile(frames, 30, axis=0)
+
+    BRIGHT = 28           # cheklangan diapazondagi qora = 16, shundan yuqori
+    MIN_FRAC = 0.006      # qator/ustunning kamida 0,6% pikseli yorug' bo'lsa — kino
+    rows = (img > BRIGHT).mean(axis=1) >= MIN_FRAC
+    cols = (img > BRIGHT).mean(axis=0) >= MIN_FRAC
+    if not rows.any() or not cols.any():
         return None
-    if cw < info.width * 0.5 or ch < info.height * 0.4:
+    y0, y1 = int(np.argmax(rows)), int(sh - np.argmax(rows[::-1]))
+    x0, x1 = int(np.argmax(cols)), int(sw - np.argmax(cols[::-1]))
+
+    fx, fy = W / sw, H / sh
+    margin = 4  # chiziq chetida yupqa qoldiq qolmasligi uchun (shkala 640 px da 1 px ~ 2 px)
+    X0 = round(x0 * fx) + (margin if x0 > 0 else 0)
+    X1 = round(x1 * fx) - (margin if x1 < sw else 0)
+    Y0 = round(y0 * fy) + (margin if y0 > 0 else 0)
+    Y1 = round(y1 * fy) - (margin if y1 < sh else 0)
+    X0, Y0 = max(0, X0), max(0, Y0)
+    X1, Y1 = min(W, X1), min(H, Y1)
+    cw, ch = (X1 - X0) // 2 * 2, (Y1 - Y0) // 2 * 2
+
+    if cw * ch >= 0.98 * W * H:
         return None
-    return cw, ch, cx, cy
+    if cw < W * 0.5 or ch < H * 0.4:
+        return None
+    return cw, ch, X0, Y0
 
 
 # ----------------------------------------------------------------------- signals
