@@ -23,6 +23,7 @@ from telethon import Button, TelegramClient, events
 from telethon.errors import FloodWaitError, MessageNotModifiedError
 from telethon.tl.types import DocumentAttributeVideo, ReplyInlineMarkup
 
+import admin
 import analyze
 import plans
 import render
@@ -56,8 +57,6 @@ VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v", ".ts", ".wmv",
 
 # ----------------------------------------------------------- kunlik cheklov (tarifga qarab)
 
-CARD_NUMBER = os.getenv("CARD_NUMBER", "").strip()
-CARD_HOLDER = os.getenv("CARD_HOLDER", "").strip()
 DB_FILE = Path(os.getenv("DB_FILE", str(Path(SESSION).parent / "bot.db")))
 
 
@@ -171,7 +170,19 @@ class Status:
 
 
 def allowed(uid: int) -> bool:
+    if uid not in ADMINS and plans.is_blocked(uid):
+        return False
     return not ALLOWED or uid in ALLOWED
+
+
+async def seen(event) -> None:
+    """Foydalanuvchini bazaga yozib boradi (statistika, qidiruv, tarqatish uchun)."""
+    try:
+        s = await event.get_sender()
+        name = " ".join(filter(None, [getattr(s, "first_name", None), getattr(s, "last_name", None)])) or None
+        plans.touch(event.sender_id, getattr(s, "username", None), name)
+    except Exception:
+        plans.touch(event.sender_id)
 
 
 def is_movie(msg) -> bool:
@@ -193,6 +204,7 @@ def mb(n: int) -> str:
 
 async def on_start(event):
     uid = event.sender_id
+    await seen(event)
     if not allowed(uid):
         await event.reply(f"Kechirasiz, bu bot shaxsiy.\nSizning ID: <code>{uid}</code>", parse_mode="html")
         return
@@ -201,6 +213,8 @@ async def on_start(event):
                     daily=daily_of(uid), plan=plans.info(uid)["name"]),
         parse_mode="html",
     )
+    if uid in ADMINS:
+        await event.reply("⚙️ Siz adminsiz: boshqaruv paneli — /panel", parse_mode="html")
 
 
 async def on_length(event):
@@ -222,6 +236,9 @@ async def on_length(event):
 async def on_text(event):
     uid = event.sender_id
     if not allowed(uid):
+        return
+    await seen(event)
+    if await admin.handle_text(event):
         return
     if uid in awaiting and uid not in pending:
         await event.reply("To'lov chekining skrinshotini rasm qilib yuboring (yoki /tarif orqali bekor qiling).")
@@ -245,6 +262,7 @@ async def on_text(event):
 async def on_media(event):
     msg = event.message
     uid = event.sender_id
+    await seen(event)
     if not allowed(uid):
         await event.reply(f"Kechirasiz, bu bot shaxsiy.\nSizning ID: <code>{uid}</code>", parse_mode="html")
         return
@@ -485,18 +503,19 @@ async def on_buy(event):
     if not allowed(uid) or plan not in ("start", "pro"):
         await event.answer()
         return
-    if not CARD_NUMBER or not ADMINS:
+    card_no, card_holder = plans.card()
+    if not card_no or not ADMINS:
         await event.answer("To'lov hozircha sozlanmagan. Keyinroq urinib ko'ring.", alert=True)
         return
     await event.answer()
     pid = plans.new_payment(uid, plan)
     awaiting[uid] = pid
     P = plans.PLANS[plan]
-    holder = f"\nKarta egasi: <b>{html.escape(CARD_HOLDER)}</b>" if CARD_HOLDER else ""
+    holder = f"\nKarta egasi: <b>{html.escape(card_holder)}</b>" if card_holder else ""
     await event.reply(
         f"💳 <b>{P['name']}</b> tarifi — <b>{som(P['price'])} so'm</b> ({plans.PLAN_DAYS} kun)\n\n"
         f"1️⃣ Quyidagi kartaga (Uzcard / Humo) aynan shu summani o'tkazing:\n"
-        f"<code>{html.escape(CARD_NUMBER)}</code>{holder}\n\n"
+        f"<code>{html.escape(card_no)}</code>{holder}\n\n"
         f"2️⃣ To'lov <b>chekining skrinshotini</b> shu yerga rasm qilib yuboring.\n\n"
         f"3️⃣ Admin tekshirib tasdiqlagach, tarif darhol yoqiladi va sizga xabar keladi.\n\n"
         f"To'lov raqami: #{pid}",
@@ -534,6 +553,7 @@ async def handle_receipt(event) -> bool:
         awaiting.pop(uid, None)
         return False
     plans.set_payment(pid, "wait")
+    plans.set_receipt(pid, event.chat_id, msg.id)
     awaiting.pop(uid, None)
     sender = await event.get_sender()
     name = html.escape(" ".join(filter(None, [getattr(sender, "first_name", ""), getattr(sender, "last_name", "")])) or "—")
@@ -831,6 +851,8 @@ async def main():
     queue = asyncio.PriorityQueue()
     client = TelegramClient(SESSION, int(os.environ["API_ID"]), os.environ["API_HASH"])
     client.parse_mode = "html"
+    admin.init(client, ADMINS, set(ADMINS), NO_BUTTONS)
+    admin.register(client)
 
     private = lambda e: e.is_private  # noqa: E731
     client.add_event_handler(on_start, events.NewMessage(incoming=True, pattern=r"^/(start|help)", func=private))

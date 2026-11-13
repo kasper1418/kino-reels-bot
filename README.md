@@ -100,3 +100,7 @@ venv/bin/python cli.py kino.mp4 --soni 10 --uzunlik 40 --matn "Kino nomi" --chiq
 - `.env`: `ADMIN_IDS`, `CARD_NUMBER`, `CARD_HOLDER`, `PRICE_START`, `PRICE_PRO`, `PLAN_DAYS`.
 - Admin buyruqlari: `/grant ID start|pro|free [kun]`, `/stats`. Foydalanuvchi: `/tarif`, `/profil`.
 - Ma'lumotlar SQLite faylida (`data/bot.db`).
+
+## Admin panel (/panel)
+
+Faqat `ADMIN_IDS` dagilar uchun. Bo'limlar: Statistika · Do'kon (karta raqami/egasi, narxlar, kunlik limitlar — `.env` dan ustun turadi) · Cheklar · Foydalanuvchilar (qidirish, tarif berish, bloklash) · Tarqatish (ko'rinish + tasdiq) · Adminlar (faqat egasi qo'shadi/o'chiradi).
