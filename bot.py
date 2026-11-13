@@ -334,6 +334,70 @@ ASK_TITLE = (
 )
 
 
+# ---------------------------------------------------------- navbat va taxminiy vaqt
+
+AVG_DEFAULT = 360.0          # bitta kino o'rtacha necha soniyada tayyor bo'lishi (dastlabki taxmin)
+avg_job = AVG_DEFAULT
+cur_started = 0.0
+
+
+def fmt_eta(sec: float) -> str:
+    mins = max(1, int(round(sec / 60.0)))
+    if mins < 2 and sec < 90:
+        return "1–2 daqiqa"
+    if mins >= 60:
+        h, m = divmod(mins, 60)
+        return f"{h} soat" + (f" {m} daqiqa" if m else "")
+    return f"{mins} daqiqa"
+
+
+def waiting_jobs() -> list:
+    """Navbatdagi (bekor qilinmagan) ishlar, ustuvorlik tartibida."""
+    items = sorted(queue._queue, key=lambda t: (t[0], t[1]))  # noqa: SLF001
+    return [t[2] for t in items if not t[2].cancel.is_set()]
+
+
+def queue_text(job) -> str:
+    """Ish uchun navbat o'rni va taxminiy vaqt matni."""
+    w = waiting_jobs()
+    idx = w.index(job) if job in w else 0
+    pos = idx + 1 + (1 if busy else 0)
+    cur_left = 0.0
+    if busy:
+        cur_left = max(avg_job * 0.25, avg_job - (time.monotonic() - cur_started))
+    wait = cur_left + idx * avg_job
+    uid = job.user_id
+    if pos == 1:
+        text = f"⏳ <b>Qabul qilindi.</b> Hozir boshlanadi.\n✅ Tayyor bo'lishiga taxminan <b>{fmt_eta(avg_job)}</b>."
+    else:
+        text = (f"⏳ Navbatdasiz: <b>{pos}-o'rin</b>\n"
+                f"🕒 Boshlanishiga taxminan <b>{fmt_eta(wait)}</b>\n"
+                f"✅ Tayyor bo'lishiga taxminan <b>{fmt_eta(wait + avg_job)}</b>")
+    if uid not in ADMINS:
+        text += f"\n\nBugun yana {left_today(uid)} ta kino yuborishingiz mumkin."
+    return text
+
+
+async def refresh_queue():
+    """Navbat siljiganda kutayotganlarning xabarini yangilaydi."""
+    for j in waiting_jobs():
+        if j.confirming or j.cancel.is_set():
+            continue
+        try:
+            await Status(j).set(queue_text(j), force=True)
+        except Exception:
+            pass
+
+
+def record_duration(sec: float) -> None:
+    global avg_job
+    avg_job = max(60.0, min(3600.0, avg_job * 0.7 + sec * 0.3))
+    try:
+        plans.set_setting("avg_job_sec", str(int(avg_job)))
+    except Exception:
+        pass
+
+
 async def enqueue(uid: int):
     """Kod va matn olingach, ishni navbatga qo'yadi."""
     p = pending.pop(uid, None)
@@ -354,13 +418,7 @@ async def enqueue(uid: int):
     seq += 1
     await queue.put((0 if uid in ADMINS else plans.info(uid)["prio"], seq, job))
     add_usage(uid, 1)
-    pos = queue.qsize() + (1 if busy else 0)
-    if pos > 1:
-        text = f"⏳ Navbatdasiz: {pos}-o'rin. Oldingi kino tugashi bilan boshlayman."
-    elif uid not in ADMINS:
-        text = f"⏳ Qabul qilindi. Bugun yana {left_today(uid)} ta kino yuborishingiz mumkin."
-    else:
-        text = "⏳ Qabul qilindi."
+    text = queue_text(job)
     job.last_text = text
     await status.edit(text, buttons=cancel_button(job))
 
@@ -805,6 +863,7 @@ async def on_cancel_yes(event):
         "❌ Bekor qilindi. Limitingiz sarflanmadi.\n\n🎬 Boshqa kino yuborishingiz mumkin.",
         buttons=NO_BUTTONS,
     )
+    asyncio.create_task(refresh_queue())     # orqadagilarning o'rni yangilansin
 
 
 async def on_skip(event):
@@ -899,14 +958,18 @@ async def process(job: Job):
 
 
 async def worker():
-    global busy
+    global busy, cur_started
     while True:
         _, _, job = await queue.get()
         busy = True
+        cur_started = time.monotonic()
+        asyncio.create_task(refresh_queue())
         try:
             if job.cancel.is_set():          # navbatda turganida bekor qilingan
                 continue
             await process(job)
+            if not job.cancel.is_set():
+                record_duration(time.monotonic() - cur_started)
         except analyze.Cancelled:
             log.info("Ish bekor qilindi: %s", job.status.id)
         except Exception as e:
@@ -938,6 +1001,11 @@ async def main():
     Path(SESSION).parent.mkdir(parents=True, exist_ok=True)
 
     plans.init(DB_FILE)
+    global avg_job
+    try:
+        avg_job = float(plans.get_setting("avg_job_sec", "") or AVG_DEFAULT)
+    except ValueError:
+        avg_job = AVG_DEFAULT
     queue = asyncio.PriorityQueue()
     client = TelegramClient(SESSION, int(os.environ["API_ID"]), os.environ["API_HASH"])
     client.parse_mode = "html"
