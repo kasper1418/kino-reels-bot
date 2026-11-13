@@ -6,14 +6,12 @@ Ovoz telefon uchun normallashtiriladi.
 """
 from __future__ import annotations
 
-import os
 import subprocess
 from pathlib import Path
 
 from analyze import Clip, MediaInfo
 
 OUT_W, OUT_H = 1080, 1920
-DEFAULT_FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
 
 def _even(x: float) -> int:
@@ -33,18 +31,9 @@ def _fg_size(info: MediaInfo, zoom: float = 1.0) -> tuple[int, int, int, int]:
     return sw, sh, min(OUT_W, sw), min(OUT_H, sh)
 
 
-def _drawtext(textfile: Path, font: str, size: int, y: int, color: str = "white") -> str:
-    return (
-        f"drawtext=fontfile={font}:textfile={textfile}:expansion=none:"
-        f"fontsize={size}:fontcolor={color}:borderw=4:bordercolor=black@0.85:"
-        f"x=(w-text_w)/2:y={y}"
-    )
-
-
-def build_filter(info: MediaInfo, length: float, workdir: Path,
-                 title: str | None, watermark: str | None, font: str,
+def build_filter(info: MediaInfo, length: float, has_overlay: bool = False,
                  zoom: float = 1.0) -> tuple[str, bool]:
-    """Qora fon ustida markazda kino kadri. Matn yo'q (title/watermark e'tiborsiz)."""
+    """Qora fon ustida markazda kino kadri; ixtiyoriy matn qatlami (1-kirish PNG) tepada."""
     sw, sh, fw, fh = _fg_size(info, zoom)
 
     chain = f"[0:{info.video_index}]"
@@ -56,13 +45,16 @@ def build_filter(info: MediaInfo, length: float, workdir: Path,
         chain += f",crop={fw}:{fh}"          # kattalashtirilganda yon tomonlari kesiladi
 
     fade_out = max(0.0, length - 0.6)
-    chain += (
-        f",pad={OUT_W}:{OUT_H}:(ow-iw)/2:(oh-ih)/2:black"
-        ",fade=t=in:st=0:d=0.4"
+    chain += f",pad={OUT_W}:{OUT_H}:(ow-iw)/2:(oh-ih)/2:black"
+    tail = (
+        "fade=t=in:st=0:d=0.4"
         f",fade=t=out:st={fade_out:.2f}:d=0.6"
         ",format=yuv420p[v]"
     )
-    parts = [chain]
+    if has_overlay:
+        parts = [chain + "[base]", "[1:v]format=rgba[ov]", "[base][ov]overlay=0:0:format=auto," + tail]
+    else:
+        parts = [chain + "," + tail]
 
     has_audio = info.audio_index is not None
     if has_audio:
@@ -74,18 +66,21 @@ def build_filter(info: MediaInfo, length: float, workdir: Path,
     return ";".join(parts), has_audio
 
 
+def top_bar_height(info: MediaInfo, zoom: float = 1.0) -> int:
+    """Kadr ustidagi qora joy balandligi (matn shu yerga joylanadi)."""
+    return (OUT_H - _fg_size(info, zoom)[3]) // 2
+
+
 def render_clip(info: MediaInfo, clip: Clip, out_path: Path,
-                title: str | None = None, watermark: str | None = None,
-                font: str = DEFAULT_FONT, zoom: float = 1.0, timeout: int = 900) -> Path:
+                overlay: Path | None = None, zoom: float = 1.0, timeout: int = 900) -> Path:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     length = clip.duration
-    fc, has_audio = build_filter(info, length, out_path.parent, title, watermark, font, zoom)
+    fc, has_audio = build_filter(info, length, overlay is not None, zoom)
 
-    cmd = [
-        "ffmpeg", "-y", "-v", "error",
-        "-ss", f"{clip.start:.3f}", "-i", info.path, "-t", f"{length:.3f}",
-        "-filter_complex", fc, "-map", "[v]",
-    ]
+    cmd = ["ffmpeg", "-y", "-v", "error", "-ss", f"{clip.start:.3f}", "-i", info.path]
+    if overlay is not None:
+        cmd += ["-i", str(overlay)]
+    cmd += ["-filter_complex", fc, "-t", f"{length:.3f}", "-map", "[v]"]
     if has_audio:
         cmd += ["-map", "[a]", "-c:a", "aac", "-b:a", "160k", "-ar", "48000"]
     cmd += [

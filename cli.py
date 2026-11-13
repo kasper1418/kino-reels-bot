@@ -9,6 +9,7 @@ from pathlib import Path
 
 import analyze
 import render
+import textoverlay
 
 
 def main():
@@ -16,8 +17,8 @@ def main():
     p.add_argument("kino")
     p.add_argument("--soni", type=int, default=10, help="nechta reels (standart 10)")
     p.add_argument("--uzunlik", type=int, default=40, help="har biri necha soniya (standart 40)")
-    p.add_argument("--matn", default=None, help="tepaga yoziladigan matn")
-    p.add_argument("--watermark", default=None, help="pastga yoziladigan kanal nomi")
+    p.add_argument("--matn", default=None, help="tepaga yoziladigan matn (*so'z* — rangli)")
+    p.add_argument("--kod", default=None, help="kino kodi")
     p.add_argument("--zoom", type=float, default=1.0, help="kadrni kattalashtirish (1.0–1.6)")
     p.add_argument("--chiqish", default="natija")
     a = p.parse_args()
@@ -27,14 +28,16 @@ def main():
     print(f"Tahlil: {time.time() - t0:.0f} s. Qora chiziqlar: {res.info.crop or 'yo‘q'}")
 
     out_dir = Path(a.chiqish)
+    overlay = None
+    if a.matn or a.kod:
+        overlay = textoverlay.make_overlay(a.matn, a.kod, render.top_bar_height(res.info, a.zoom),
+                                           out_dir / "overlay.png")
     for c in res.clips:
         t = time.time()
         out = out_dir / f"reel_{c.rank:02d}.mp4"
-        render.render_clip(res.info, c, out, a.matn, a.watermark, zoom=a.zoom)
+        render.render_clip(res.info, c, out, overlay, zoom=a.zoom)
         print(f"{c.rank:2d}. {analyze.fmt_time(c.start)}–{analyze.fmt_time(c.end)} "
               f"ball={c.score:.3f}  → {out}  ({time.time() - t:.0f} s)")
-    for f in out_dir.glob("*.txt"):
-        f.unlink()
     print(f"Hammasi: {time.time() - t0:.0f} s")
 
 

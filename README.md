@@ -8,9 +8,9 @@ Telegram'ga kino tashlaysiz. Bot uning eng qiziq joylarini topib, **10 ta vertik
 - Kinoning har bir soniyasiga ball qo'yadi: **ovoz balandligi**, **harakat** va **sahna almashinuvi tezligi** bo'yicha. Keyin eng yuqori ball olgan, bir-birini takrorlamaydigan 10 ta joyni tanlaydi.
 - Boshidagi logotiplar va oxiridagi titrlar tashlab ketiladi.
 - Kesish sahna boshidan boshlanadi, boshi va oxiri silliq (fade) chiqadi.
-- Kinodagi qora chiziqlar avtomatik olib tashlanadi. O'rtada kino, orqa fonda uning xiralashtirilgan nusxasi turadi.
+- Kinodagi qora chiziqlar avtomatik olib tashlanadi. O'rtada kino, tepasi va pasti qora fon.
 - Ovoz telefon uchun balandlashtiriladi. Kinoda o'zbekcha audio yo'lak bo'lsa, o'sha olinadi.
-- Kino ostiga yozilgan matn (masalan, kino nomi) har bir reelsning tepasiga yoziladi.
+- Kino yuborilgach, bot **kino kodi** va **matn** so'raydi (ikkalasi ixtiyoriy, tugma bilan o'tkazib yuborish mumkin). Yozilsa, ular videoning tepasida chiroyli shriftda chiqadi. Matnda `*yulduzcha*` ichiga olingan so'zlar sariq rangli bo'ladi.
 - Har bir reels ostida kinoning qaysi qismi ekanligi yoziladi (masalan, `1:12:40–1:13:20`).
 
 ## 1. Kerakli kalitlar
@@ -65,7 +65,6 @@ journalctl -u kino-reels-bot -f             # loglarni ko'rish
 |---|---|---|
 | `CLIP_COUNT` | Nechta reels | 10 |
 | `CLIP_LEN` | Har biri necha soniya | 40 |
-| `WATERMARK` | Pastga yoziladigan kanal nomi, masalan `@kino_kanalim` | yo'q |
 | `KADR_ZOOM` | `1.3` qilsangiz, kadr kattalashadi (yon tomonlari biroz kesiladi) | 1.0 |
 | `ALLOWED_USERS` | Ruxsat berilgan ID lar, vergul bilan | hamma |
 

@@ -18,12 +18,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
-from telethon import TelegramClient, events
+from telethon import Button, TelegramClient, events
 from telethon.errors import FloodWaitError, MessageNotModifiedError
 from telethon.tl.types import DocumentAttributeVideo
 
 import analyze
 import render
+import textoverlay
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -40,8 +41,6 @@ def _env_int(name: str, default: int) -> int:
 
 CLIP_COUNT = max(1, min(_env_int("CLIP_COUNT", 10), 20))
 DEFAULT_LEN = max(15, min(_env_int("CLIP_LEN", 40), 90))
-WATERMARK = os.getenv("WATERMARK", "").strip() or None
-FONT_PATH = os.getenv("FONT_PATH", render.DEFAULT_FONT)
 ZOOM = float(os.getenv("KADR_ZOOM", "1.3") or 1.3)
 WORK_DIR = Path(os.getenv("WORK_DIR", "data/work"))
 SESSION = os.getenv("SESSION_PATH", "data/bot")
@@ -94,6 +93,9 @@ HELP = (
     "🎬 Salom! Menga kino yuboring — eng qiziq joylaridan {count} ta "
     "vertikal (9:16) reels tayyorlab beraman.\n\n"
     "• Kinoni video yoki fayl qilib yuboring (MP4, MKV, AVI…), 2 GB gacha.\n"
+    "• Kinoni yuborgach, bot <b>kino kodi</b> va <b>matn</b> so'raydi (ixtiyoriy). Yozsangiz, "
+    "ular videoning tepasida chiroyli shriftda chiqadi. Ba'zi so'zlarni rangli qilish uchun "
+    "<code>*yulduzcha*</code> ichiga oling.\n"
     "• Reels uzunligi hozir: {length} soniya. O'zgartirish: /uzunlik 30 "
     "(15–90 oralig'ida).\n"
     "• Har kuni {daily} ta kino ishlata olasiz.\n\n"
@@ -104,6 +106,7 @@ client: TelegramClient
 queue: asyncio.Queue
 busy = False
 user_len: dict[int, int] = {}
+pending: dict[int, dict] = {}   # kino yuborilgan, kod/matn kutilmoqda
 
 
 @dataclass
@@ -114,6 +117,7 @@ class Job:
     status: object     # holat ko'rsatiladigan xabar
     length: int
     title: str | None
+    code: str | None = None
 
 
 class Status:
@@ -187,8 +191,14 @@ async def on_length(event):
 
 
 async def on_text(event):
-    if allowed(event.sender_id):
-        await event.reply("Menga kino faylini yuboring 🎬  Yordam: /start")
+    uid = event.sender_id
+    if not allowed(uid):
+        return
+    if uid in pending:
+        text = (event.raw_text or "").strip()
+        await advance(uid, text[:120] if text else None)
+        return
+    await event.reply("Menga kino faylini yuboring 🎬  Yordam: /start")
 
 
 async def on_media(event):
@@ -218,15 +228,79 @@ async def on_media(event):
         await event.reply("❌ Serverda joy yetarli emas. Keyinroq urinib ko'ring.")
         return
 
-    title = None  # reelsda matn yo'q
-    status = await event.reply("⏳ Qabul qilindi…")
-    await queue.put(Job(event.chat_id, uid, msg, status, user_len.get(uid, DEFAULT_LEN), title))
+    old = pending.pop(uid, None)
+    status = await event.reply(
+        "🎬 Kino qabul qilindi.\n\n"
+        "1️⃣ <b>Kino kodini</b> yozing (masalan: <code>1234</code>). U videoning tepasida chiqadi.\n"
+        "Kerak bo'lmasa, tugmani bosing.",
+        buttons=[Button.inline("⏭ O'tkazib yuborish", b"skip")],
+        parse_mode="html",
+    )
+    pending[uid] = {"step": "code", "msg": msg, "status": status, "chat_id": event.chat_id,
+                    "code": None, "title": None}
+    if old:
+        try:
+            await old["status"].edit("↩️ Bekor qilindi: yangi kino yubordingiz.", buttons=None)
+        except Exception:
+            pass
+
+
+ASK_TITLE = (
+    "2️⃣ Endi videoning tepasiga chiqadigan <b>matnni</b> yozing.\n\n"
+    "Ba'zi so'zlarni <b>rangli</b> qilish uchun ularni yulduzcha ichiga oling:\n"
+    "<code>Eng *kuchli* jang sahnasi</code>  →  «kuchli» sariq chiqadi.\n\n"
+    "Kerak bo'lmasa, tugmani bosing."
+)
+
+
+async def enqueue(uid: int):
+    """Kod va matn olingach, ishni navbatga qo'yadi."""
+    p = pending.pop(uid, None)
+    if not p:
+        return
+    status = p["status"]
+    if uid not in ADMINS and left_today(uid) <= 0:
+        await status.edit(
+            f"⛔ Bugungi limit tugadi: kuniga {DAILY_LIMIT} ta kino. Ertaga yana urinib ko'ring "
+            "(yangi kun Toshkent vaqti bilan yarim tundan boshlanadi).", buttons=None)
+        return
+    if queue.qsize() >= QUEUE_MAX:
+        await status.edit("⏳ Hozir navbat to'la. Bir necha daqiqadan keyin kinoni qayta yuboring.", buttons=None)
+        return
+    await queue.put(Job(p["chat_id"], uid, p["msg"], status, user_len.get(uid, DEFAULT_LEN),
+                        p["title"], p["code"]))
     add_usage(uid, 1)
     pos = queue.qsize() + (1 if busy else 0)
     if pos > 1:
-        await Status(status).set(f"⏳ Navbatdasiz: {pos}-o'rin. Oldingi kino tugashi bilan boshlayman.")
+        text = f"⏳ Navbatdasiz: {pos}-o'rin. Oldingi kino tugashi bilan boshlayman."
     elif uid not in ADMINS:
-        await Status(status).set(f"⏳ Qabul qilindi. Bugun yana {left_today(uid)} ta kino yuborishingiz mumkin.", force=True)
+        text = f"⏳ Qabul qilindi. Bugun yana {left_today(uid)} ta kino yuborishingiz mumkin."
+    else:
+        text = "⏳ Qabul qilindi."
+    await status.edit(text, buttons=None)
+
+
+async def advance(uid: int, value: str | None):
+    """Navbatdagi bosqichga o'tadi: kod → matn → navbat."""
+    p = pending.get(uid)
+    if not p:
+        return
+    if p["step"] == "code":
+        p["code"] = value
+        p["step"] = "title"
+        await p["status"].edit(ASK_TITLE, buttons=[Button.inline("⏭ O'tkazib yuborish", b"skip")], parse_mode="html")
+    else:
+        p["title"] = value
+        await enqueue(uid)
+
+
+async def on_skip(event):
+    uid = event.sender_id
+    if not allowed(uid) or uid not in pending:
+        await event.answer("Bu so'rov eskirgan. Kinoni qayta yuboring.", alert=True)
+        return
+    await event.answer()
+    await advance(uid, None)
 
 
 # -------------------------------------------------------------------- worker
@@ -269,12 +343,18 @@ async def process(job: Job):
         if not res.clips:
             raise RuntimeError("kinodan mos joy topilmadi")
 
+        overlay = None
+        if job.title or job.code:
+            top_h = render.top_bar_height(res.info, ZOOM)
+            overlay = await asyncio.to_thread(
+                textoverlay.make_overlay, job.title, job.code, top_h, jobdir / "overlay.png")
+
         total = len(res.clips)
         for i, clip in enumerate(res.clips, 1):
             await st.set(f"✂️ Reels tayyorlanmoqda: {i} / {total}", force=True)
             out = jobdir / f"reel_{i:02d}.mp4"
             await asyncio.to_thread(
-                render.render_clip, res.info, clip, out, job.title, WATERMARK, FONT_PATH, ZOOM,
+                render.render_clip, res.info, clip, out, overlay, ZOOM,
             )
             thumb = await asyncio.to_thread(
                 render.make_thumb, out, clip.duration * 0.3, jobdir / f"thumb_{i:02d}.jpg",
@@ -334,6 +414,8 @@ async def main():
     client.add_event_handler(on_text, events.NewMessage(
         incoming=True, func=lambda e: e.is_private and e.message.file is None
         and not (e.raw_text or "").startswith("/")))
+
+    client.add_event_handler(on_skip, events.CallbackQuery(data=b"skip"))
 
     await client.start(bot_token=os.environ["BOT_TOKEN"])
     me = await client.get_me()
