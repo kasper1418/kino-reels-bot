@@ -117,7 +117,7 @@ def make_overlay(title: str | None, code: str | None, top_h: int, out: Path,
         region_h = max(120, y1 - y0)
 
         chosen = None
-        for size in range(72, 35, -4):
+        for size in range(56, 31, -4):
             font = ImageFont.truetype(font_path, size)
             lines, space = _wrap(d, words, font, max_w)
             if any(sum(w[2] for w in ln) + space * (len(ln) - 1) > max_w for ln in lines):
@@ -127,9 +127,9 @@ def make_overlay(title: str | None, code: str | None, top_h: int, out: Path,
                 chosen = (font, lines, space, line_h)
                 break
         if chosen is None:                  # sig'magan bo'lsa, eng kichik shrift
-            font = ImageFont.truetype(font_path, 36)
+            font = ImageFont.truetype(font_path, 32)
             lines, space = _wrap(d, words, font, max_w)
-            chosen = (font, lines[:5], space, int(36 * 1.22))
+            chosen = (font, lines[:5], space, int(32 * 1.22))
 
         font, lines, space, line_h = chosen
         y = y0 + max(0, (region_h - line_h * len(lines)) // 2)
