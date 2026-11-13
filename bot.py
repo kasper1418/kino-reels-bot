@@ -150,15 +150,57 @@ class Status:
 
     Ish davomida xabar tagida «Bekor qilish» tugmasi turadi. Yakuniy xabarlarda
     (final=True) tugma olib tashlanadi.
+
+    Oraliq yangilanishlar fonda yuboriladi (yuklash va ishlov to'xtab qolmasin), yakuniy
+    xabar esa FloodWait bo'lsa kutib qayta uriniladi va oxirgi chora sifatida yangi xabar
+    sifatida yuboriladi. Hamma tahrirlar bitta qulf orqali tartib bilan o'tadi.
     """
 
-    def __init__(self, job_or_msg, every: float = 4.0):
+    def __init__(self, job_or_msg, every: float = 6.0):
         self.job = job_or_msg if isinstance(job_or_msg, Job) else None
         self.msg = job_or_msg.status if self.job else job_or_msg
         self.every = every
         self.text, self.last = "", 0.0
+        self.lock = asyncio.Lock()
+        self.closed = False          # yakuniy xabar yuborilgach, eski yangilanishlar tashlab yuboriladi
+        self.inflight = False
+        self.pending = None
 
-    async def set(self, text: str, force: bool = False, final: bool = False):
+    async def _edit(self, text: str, buttons, retries: int = 0) -> bool:
+        for attempt in range(retries + 1):
+            try:
+                await self.msg.edit(text, buttons=buttons)
+                return True
+            except MessageNotModifiedError:
+                return True
+            except FloodWaitError as e:
+                log.warning("Telegram holat xabarini yangilashni %s s kutishni so'radi", e.seconds)
+                if attempt < retries:
+                    await asyncio.sleep(min(e.seconds, 120) + 1)
+                    continue
+                self.last = time.monotonic() + e.seconds
+                return False
+            except Exception as e:  # holat xabari muhim emas — ish to'xtamasin
+                log.warning("Holatni yangilab bo'lmadi: %s", e)
+                return False
+        return False
+
+    async def _background(self):
+        try:
+            while self.pending is not None:
+                text, buttons, guard = self.pending
+                self.pending = None
+                async with self.lock:
+                    job = self.job
+                    if self.closed or (guard is not None and not guard()):
+                        continue
+                    if job is not None and (job.confirming or job.cancel.is_set()):
+                        continue
+                    await self._edit(text, buttons)
+        finally:
+            self.inflight = False
+
+    async def set(self, text: str, force: bool = False, final: bool = False, guard=None):
         job = self.job
         if job is not None:
             if not final:
@@ -175,15 +217,24 @@ class Status:
             buttons = cancel_button(job)
         else:
             buttons = None
-        try:
-            await self.msg.edit(text, buttons=buttons)
-        except MessageNotModifiedError:
-            pass
-        except FloodWaitError as e:
-            log.warning("Telegram holat xabarini yangilashni %s s kutishni so'radi", e.seconds)
-            self.last = now + e.seconds
-        except Exception as e:  # holat xabari muhim emas — ish to'xtamasin
-            log.warning("Holatni yangilab bo'lmadi: %s", e)
+
+        if final:
+            self.closed = True
+            self.pending = None
+            async with self.lock:
+                ok = await self._edit(text, buttons, retries=3)
+            if not ok:                       # tahrirlab bo'lmadi: natijani yangi xabar qilib yuboramiz
+                try:
+                    await client.send_message(self.msg.chat_id, text)
+                except Exception as e:
+                    log.warning("Yakuniy xabarni yuborib bo'lmadi: %s", e)
+            return
+        if self.closed:
+            return
+        self.pending = (text, buttons, guard)      # eng oxirgi matn yuboriladi
+        if not self.inflight:
+            self.inflight = True
+            asyncio.create_task(self._background())
 
 
 def allowed(uid: int) -> bool:
@@ -402,7 +453,7 @@ async def refresh_queue():
         if j.confirming or j.cancel.is_set():
             continue
         try:
-            await Status(j).set(queue_text(j), force=True)
+            await job_status(j).set(queue_text(j), force=True, guard=lambda j=j: id(j) not in active)
         except Exception:
             pass
 
@@ -889,6 +940,7 @@ async def on_cancel_yes(event):
     await event.answer()
     job.cancel.set()
     job.confirming = False
+    job_status(job).closed = True
     if job.dl_task is not None:
         job.dl_task.cancel()
     if not job.refunded:
@@ -1086,7 +1138,7 @@ async def worker():
             if not job.refunded:
                 job.refunded = True
                 add_usage(job.user_id, -1)   # muvaffaqiyatsiz bo'lsa, limit qaytariladi
-            await Status(job).set(
+            await job_status(job).set(
                 f"❌ Xatolik yuz berdi: {html.escape(str(e))[:300]}\n\nLimitingiz sarflanmadi. "
                 "Kinoni qayta yuborib ko'ring.", force=True, final=True)
         finally:
