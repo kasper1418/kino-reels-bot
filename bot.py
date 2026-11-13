@@ -12,15 +12,16 @@ import json
 import logging
 import os
 import shutil
+import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
 from telethon import Button, TelegramClient, events
 from telethon.errors import FloodWaitError, MessageNotModifiedError
-from telethon.tl.types import DocumentAttributeVideo
+from telethon.tl.types import DocumentAttributeVideo, ReplyInlineMarkup
 
 import analyze
 import render
@@ -107,6 +108,7 @@ client: TelegramClient
 queue: asyncio.Queue
 busy = False
 user_len: dict[int, int] = {}
+jobs: dict[tuple, "Job"] = {}   # (chat_id, status_id) -> ish; bekor qilish uchun
 pending: dict[int, dict] = {}   # kino yuborilgan, kod/matn kutilmoqda
 
 
@@ -120,22 +122,52 @@ class Job:
     title: str | None
     code: str | None = None
     count: int = 5
+    cancel: threading.Event = field(default_factory=threading.Event)
+    confirming: bool = False      # "Rostan bekor qilasizmi?" so'ralmoqda
+    refunded: bool = False        # limit qaytarilganmi
+    last_text: str = ""
+    dl_task: object = None
+
+
+NO_BUTTONS = ReplyInlineMarkup(rows=[])   # inline tugmalarni to'liq olib tashlaydi
+
+
+def cancel_button(job: "Job"):
+    return [[Button.inline("❌ Bekor qilish", f"c:{job.status.id}".encode())]]
 
 
 class Status:
-    """Xabarni tez-tez tahrirlab, Telegram cheklovlariga tushib qolmaslik uchun."""
+    """Xabarni tez-tez tahrirlab, Telegram cheklovlariga tushib qolmaslik uchun.
 
-    def __init__(self, msg, every: float = 4.0):
-        self.msg, self.every = msg, every
+    Ish davomida xabar tagida «Bekor qilish» tugmasi turadi. Yakuniy xabarlarda
+    (final=True) tugma olib tashlanadi.
+    """
+
+    def __init__(self, job_or_msg, every: float = 4.0):
+        self.job = job_or_msg if isinstance(job_or_msg, Job) else None
+        self.msg = job_or_msg.status if self.job else job_or_msg
+        self.every = every
         self.text, self.last = "", 0.0
 
-    async def set(self, text: str, force: bool = False):
+    async def set(self, text: str, force: bool = False, final: bool = False):
+        job = self.job
+        if job is not None:
+            if not final:
+                job.last_text = text
+                if job.confirming or job.cancel.is_set():
+                    return
         now = time.monotonic()
-        if text == self.text or (not force and now - self.last < self.every):
+        if text == self.text or (not force and not final and now - self.last < self.every):
             return
         self.text, self.last = text, now
+        if final:
+            buttons = NO_BUTTONS
+        elif job is not None:
+            buttons = cancel_button(job)
+        else:
+            buttons = None
         try:
-            await self.msg.edit(text)
+            await self.msg.edit(text, buttons=buttons)
         except MessageNotModifiedError:
             pass
         except FloodWaitError as e:
@@ -274,13 +306,15 @@ async def enqueue(uid: int):
     if uid not in ADMINS and left_today(uid) <= 0:
         await status.edit(
             f"⛔ Bugungi limit tugadi: kuniga {DAILY_LIMIT} ta kino. Ertaga yana urinib ko'ring "
-            "(yangi kun Toshkent vaqti bilan yarim tundan boshlanadi).", buttons=None)
+            "(yangi kun Toshkent vaqti bilan yarim tundan boshlanadi).", buttons=NO_BUTTONS)
         return
     if queue.qsize() >= QUEUE_MAX:
-        await status.edit("⏳ Hozir navbat to'la. Bir necha daqiqadan keyin kinoni qayta yuboring.", buttons=None)
+        await status.edit("⏳ Hozir navbat to'la. Bir necha daqiqadan keyin kinoni qayta yuboring.", buttons=NO_BUTTONS)
         return
-    await queue.put(Job(p["chat_id"], uid, p["msg"], status, user_len.get(uid, DEFAULT_LEN),
-                        p["title"], p["code"], p.get("count", CLIP_COUNT)))
+    job = Job(p["chat_id"], uid, p["msg"], status, user_len.get(uid, DEFAULT_LEN),
+              p["title"], p["code"], p.get("count", CLIP_COUNT))
+    jobs[(p["chat_id"], status.id)] = job
+    await queue.put(job)
     add_usage(uid, 1)
     pos = queue.qsize() + (1 if busy else 0)
     if pos > 1:
@@ -289,7 +323,8 @@ async def enqueue(uid: int):
         text = f"⏳ Qabul qilindi. Bugun yana {left_today(uid)} ta kino yuborishingiz mumkin."
     else:
         text = "⏳ Qabul qilindi."
-    await status.edit(text, buttons=None)
+    job.last_text = text
+    await status.edit(text, buttons=cancel_button(job))
 
 
 ASK_COUNT = (
@@ -335,6 +370,64 @@ async def on_count(event):
     await set_count(uid, int(event.data[1:]))
 
 
+# ------------------------------------------------------------- bekor qilish
+
+def _job_from_event(event):
+    sid = int(event.data.split(b":")[1])
+    job = jobs.get((event.chat_id, sid))
+    if job is None or job.user_id != event.sender_id:
+        return None
+    return job
+
+
+async def on_cancel_ask(event):
+    """«Bekor qilish» bosildi — tasdiq so'raymiz (ish davom etaveradi)."""
+    job = _job_from_event(event)
+    if job is None or job.cancel.is_set():
+        await event.answer("Bu ish allaqachon tugagan.", alert=True)
+        return
+    await event.answer()
+    job.confirming = True
+    sid = job.status.id
+    await job.status.edit(
+        "❓ <b>Rostan bekor qilasizmi?</b>\n\n"
+        "Ish to'xtatiladi, kino o'chiriladi. Limitingiz sarflanmaydi.",
+        buttons=[[Button.inline("✅ Ha, bekor qil", f"cy:{sid}".encode()),
+                  Button.inline("↩️ Yo'q, davom et", f"cn:{sid}".encode())]],
+        parse_mode="html",
+    )
+
+
+async def on_cancel_no(event):
+    job = _job_from_event(event)
+    if job is None:
+        await event.answer("Bu ish allaqachon tugagan.", alert=True)
+        return
+    await event.answer()
+    job.confirming = False
+    await job.status.edit(job.last_text or "⏳ Davom etmoqda…", buttons=cancel_button(job))
+
+
+async def on_cancel_yes(event):
+    job = _job_from_event(event)
+    if job is None or job.cancel.is_set():
+        await event.answer("Bu ish allaqachon tugagan.", alert=True)
+        return
+    await event.answer()
+    job.cancel.set()
+    job.confirming = False
+    if job.dl_task is not None:
+        job.dl_task.cancel()
+    if not job.refunded:
+        job.refunded = True
+        add_usage(job.user_id, -1)
+    jobs.pop((job.chat_id, job.status.id), None)
+    await job.status.edit(
+        "❌ Bekor qilindi. Limitingiz sarflanmadi.\n\n🎬 Boshqa kino yuborishingiz mumkin.",
+        buttons=NO_BUTTONS,
+    )
+
+
 async def on_skip(event):
     uid = event.sender_id
     if not allowed(uid) or uid not in pending or pending[uid]["step"] == "count":
@@ -358,7 +451,7 @@ async def send_reel(job: Job, path: Path, thumb: Path | None, caption: str, dura
 
 
 async def process(job: Job):
-    st = Status(job.status)
+    st = Status(job)
     jobdir = WORK_DIR / f"{job.chat_id}_{job.msg.id}"
     jobdir.mkdir(parents=True, exist_ok=True)
     try:
@@ -369,7 +462,17 @@ async def process(job: Job):
             await st.set(f"📥 Kino yuklab olinmoqda: {pct}%  ({mb(cur)} / {mb(total)} MB)")
 
         await st.set("📥 Kino yuklab olinmoqda…", force=True)
-        await client.download_media(job.msg, file=str(src), progress_callback=dl_progress)
+        job.dl_task = asyncio.create_task(
+            client.download_media(job.msg, file=str(src), progress_callback=dl_progress))
+        try:
+            await job.dl_task
+        except asyncio.CancelledError:
+            if job.cancel.is_set():
+                raise analyze.Cancelled()
+            raise
+        finally:
+            job.dl_task = None
+        analyze.check_cancel(job.cancel)
 
         loop = asyncio.get_running_loop()
 
@@ -378,7 +481,7 @@ async def process(job: Job):
 
         t0 = time.monotonic()
         res = await asyncio.to_thread(
-            analyze.find_highlights, str(src), job.count, job.length, an_progress,
+            analyze.find_highlights, str(src), job.count, job.length, an_progress, job.cancel,
         )
         log.info("Tahlil %.0f s, %d ta joy topildi", time.monotonic() - t0, len(res.clips))
         if not res.clips:
@@ -392,22 +495,25 @@ async def process(job: Job):
 
         total = len(res.clips)
         for i, clip in enumerate(res.clips, 1):
+            analyze.check_cancel(job.cancel)
             await st.set(f"✂️ Reels tayyorlanmoqda: {i} / {total}", force=True)
             out = jobdir / f"reel_{i:02d}.mp4"
             await asyncio.to_thread(
-                render.render_clip, res.info, clip, out, overlay, ZOOM,
+                render.render_clip, res.info, clip, out, overlay, ZOOM, 900, job.cancel,
             )
             thumb = await asyncio.to_thread(
                 render.make_thumb, out, clip.duration * 0.3, jobdir / f"thumb_{i:02d}.jpg",
             )
             caption = ""  # reelsda ortiqcha yozuv yo'q
+            analyze.check_cancel(job.cancel)
             await send_reel(job, out, thumb, caption, clip.duration)
             out.unlink(missing_ok=True)
 
         await st.set(
             f"✅ Tayyor! {total} ta reels yuborildi.\n"
-            "1-variant — bot eng qiziq deb topgan joy, keyingilari kamayib boradi.",
-            force=True,
+            "1-variant — bot eng qiziq deb topgan joy, keyingilari kamayib boradi.\n\n"
+            "🎬 Boshqa kino yuborishingiz mumkin.",
+            force=True, final=True,
         )
     finally:
         shutil.rmtree(jobdir, ignore_errors=True)
@@ -419,12 +525,21 @@ async def worker():
         job: Job = await queue.get()
         busy = True
         try:
+            if job.cancel.is_set():          # navbatda turganida bekor qilingan
+                continue
             await process(job)
+        except analyze.Cancelled:
+            log.info("Ish bekor qilindi: %s", job.status.id)
         except Exception as e:
             log.exception("Ish bajarilmadi")
-            add_usage(job.user_id, -1)  # muvaffaqiyatsiz bo'lsa, limit qaytariladi
-            await Status(job.status).set(f"❌ Xatolik yuz berdi: {html.escape(str(e))[:300]}", force=True)
+            if not job.refunded:
+                job.refunded = True
+                add_usage(job.user_id, -1)   # muvaffaqiyatsiz bo'lsa, limit qaytariladi
+            await Status(job).set(
+                f"❌ Xatolik yuz berdi: {html.escape(str(e))[:300]}\n\nLimitingiz sarflanmadi. "
+                "Kinoni qayta yuborib ko'ring.", force=True, final=True)
         finally:
+            jobs.pop((job.chat_id, job.status.id), None)
             busy = False
             queue.task_done()
 
@@ -458,6 +573,9 @@ async def main():
 
     client.add_event_handler(on_skip, events.CallbackQuery(data=b"skip"))
     client.add_event_handler(on_count, events.CallbackQuery(pattern=rb"^n[1-5]$"))
+    client.add_event_handler(on_cancel_ask, events.CallbackQuery(pattern=rb"^c:\d+$"))
+    client.add_event_handler(on_cancel_yes, events.CallbackQuery(pattern=rb"^cy:\d+$"))
+    client.add_event_handler(on_cancel_no, events.CallbackQuery(pattern=rb"^cn:\d+$"))
 
     await client.start(bot_token=os.environ["BOT_TOKEN"])
     me = await client.get_me()

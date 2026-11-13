@@ -14,11 +14,21 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import threading
 from dataclasses import dataclass, field
 
 import numpy as np
 
 AUDIO_SR = 8000  # tahlil uchun yetarli, tez ishlaydi
+
+
+class Cancelled(Exception):
+    """Foydalanuvchi ishni bekor qildi."""
+
+
+def check_cancel(cancel: "threading.Event | None") -> None:
+    if cancel is not None and cancel.is_set():
+        raise Cancelled()
 
 
 @dataclass
@@ -193,7 +203,7 @@ def detect_crop(info: MediaInfo) -> tuple[int, int, int, int] | None:
 
 # ----------------------------------------------------------------------- signals
 
-def audio_loudness_db(info: MediaInfo, n_sec: int) -> np.ndarray:
+def audio_loudness_db(info: MediaInfo, n_sec: int, cancel=None) -> np.ndarray:
     """Har soniya uchun ovoz balandligi (dBFS)."""
     out = np.full(n_sec, -90.0, dtype=np.float64)
     if info.audio_index is None:
@@ -207,6 +217,10 @@ def audio_loudness_db(info: MediaInfo, n_sec: int) -> np.ndarray:
     i = 0
     assert proc.stdout is not None
     while True:
+        if cancel is not None and cancel.is_set():
+            proc.kill()
+            proc.wait()
+            raise Cancelled()
         data = proc.stdout.read(sec_bytes * 60)
         if not data:
             break
@@ -227,7 +241,7 @@ def audio_loudness_db(info: MediaInfo, n_sec: int) -> np.ndarray:
     return out
 
 
-def video_activity(info: MediaInfo, n_sec: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def video_activity(info: MediaInfo, n_sec: int, cancel=None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Dekodlamasdan: har soniyadagi baytlar, kalit kadrlar soni va kalit kadr vaqtlari."""
     bytes_ps = np.zeros(n_sec, dtype=np.float64)
     keys_ps = np.zeros(n_sec, dtype=np.float64)
@@ -237,7 +251,11 @@ def video_activity(info: MediaInfo, n_sec: int) -> tuple[np.ndarray, np.ndarray,
         "-show_entries", "packet=pts_time,dts_time,size,flags", "-of", "csv=p=0", info.path,
     ], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
     assert proc.stdout is not None
-    for line in proc.stdout:
+    for n_line, line in enumerate(proc.stdout):
+        if n_line % 4000 == 0 and cancel is not None and cancel.is_set():
+            proc.kill()
+            proc.wait()
+            raise Cancelled()
         parts = line.strip().split(",")
         if len(parts) < 4:
             continue
@@ -343,8 +361,9 @@ def pick_clips(score: np.ndarray, duration: float, key_times: np.ndarray,
 
 
 def find_highlights(path: str, count: int = 10, length: int = 40,
-                    progress=None) -> Analysis:
+                    progress=None, cancel=None) -> Analysis:
     def step(msg):
+        check_cancel(cancel)
         if progress:
             progress(msg)
 
@@ -356,10 +375,10 @@ def find_highlights(path: str, count: int = 10, length: int = 40,
     info.crop = detect_crop(info)
 
     step("Ovoz tahlil qilinmoqda")
-    db = audio_loudness_db(info, n_sec)
+    db = audio_loudness_db(info, n_sec, cancel)
 
     step("Sahnalar tahlil qilinmoqda")
-    bytes_ps, keys_ps, key_times = video_activity(info, n_sec)
+    bytes_ps, keys_ps, key_times = video_activity(info, n_sec, cancel)
 
     step("Eng qiziq joylar tanlanmoqda")
     score = score_seconds(db, bytes_ps, keys_ps)

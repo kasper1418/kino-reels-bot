@@ -7,9 +7,10 @@ Ovoz telefon uchun normallashtiriladi.
 from __future__ import annotations
 
 import subprocess
+import time
 from pathlib import Path
 
-from analyze import Clip, MediaInfo
+from analyze import Cancelled, Clip, MediaInfo
 
 OUT_W, OUT_H = 1080, 1920
 
@@ -72,7 +73,8 @@ def top_bar_height(info: MediaInfo, zoom: float = 1.0) -> int:
 
 
 def render_clip(info: MediaInfo, clip: Clip, out_path: Path,
-                overlay: Path | None = None, zoom: float = 1.0, timeout: int = 900) -> Path:
+                overlay: Path | None = None, zoom: float = 1.0, timeout: int = 900,
+                cancel=None) -> Path:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     length = clip.duration
     fc, has_audio = build_filter(info, length, overlay is not None, zoom)
@@ -88,9 +90,24 @@ def render_clip(info: MediaInfo, clip: Clip, out_path: Path,
         "-maxrate", "8M", "-bufsize", "16M", "-pix_fmt", "yuv420p",
         "-movflags", "+faststart", str(out_path),
     ]
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    if r.returncode != 0:
-        raise RuntimeError(f"ffmpeg xatosi: {r.stderr.strip()[-500:]}")
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    t0 = time.monotonic()
+    while True:
+        try:
+            _, err = proc.communicate(timeout=1)
+            break
+        except subprocess.TimeoutExpired:
+            if cancel is not None and cancel.is_set():
+                proc.kill()
+                proc.wait()
+                out_path.unlink(missing_ok=True)
+                raise Cancelled()
+            if time.monotonic() - t0 > timeout:
+                proc.kill()
+                proc.wait()
+                raise RuntimeError("ffmpeg juda uzoq ishladi")
+    if proc.returncode != 0:
+        raise RuntimeError(f"ffmpeg xatosi: {(err or '').strip()[-500:]}")
     return out_path
 
 

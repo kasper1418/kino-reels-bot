@@ -13,6 +13,8 @@ Telegram'ga kino tashlaysiz. Bot uning eng qiziq joylarini topib, **1 dan 5 taga
 - Kino yuborilgach, bot **kino kodi**, **matn** va **variantlar sonini** (1–5) so'raydi. Kod va matn ixtiyoriy, tugma bilan o'tkazib yuborish mumkin. Yozilsa, matn videoning tepasida, kod esa pastida chiroyli shriftda chiqadi. So'zni rangli qilish: `*so'z*` — sariq, `[so'z]` — qizil. Misol: `Eng *kuchli* jang [ayovsiz] sahnasi`.
 - Har bir reels ostida kinoning qaysi qismi ekanligi yoziladi (masalan, `1:12:40–1:13:20`).
 
+- Ish davomida (yuklash, tahlil, tayyorlash) xabar tagida **❌ Bekor qilish** tugmasi turadi. Bosilsa, bot "Rostan bekor qilasizmi?" deb so'raydi. Tasdiqlansa, ish to'xtatiladi, kino o'chiriladi va **limit sarflanmaydi**.
+
 ## 1. Kerakli kalitlar
 
 1. **Bot tokeni:** Telegram'da @BotFather → `/newbot` → token nusxa oling.
