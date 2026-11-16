@@ -138,7 +138,7 @@ class Job:
     st: object = None
 
 
-NO_BUTTONS = ReplyInlineMarkup(rows=[])   # inline tugmalarni to'liq olib tashlaydi
+NO_BUTTONS = None   # tahrirda markup yuborilmasa, inline tugmalar olib tashlanadi (bo'sh ReplyInlineMarkup Telegramda xato beradi)
 
 
 def cancel_button(job: "Job"):
